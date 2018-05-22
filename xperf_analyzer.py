@@ -62,7 +62,7 @@ class XPerfInterval(XPerfAttribute):
         end = self.seen_evtlist[-1]
         start = self.seen_evtlist[0]
         duration = end.get_timestamp() - start.get_timestamp()
-        print(f"Interval from \"{start!s}\" to \"{end!s}\" took {duration!s} milliseconds.")
+        print(f"Interval from [{start!s}] to [{end!s}] took [{duration!s}] milliseconds.")
 
 class XPerfCounter(XPerfAttribute):
     def __init__(self, evt):
