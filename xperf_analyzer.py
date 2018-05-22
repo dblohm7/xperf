@@ -433,8 +433,8 @@ def main():
     interval1 = XPerfInterval(fxstart1, sess_restore)
     etl.add_attr(interval1)
 
-    fxstart2 = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart()])
-    ready = ReadyThread()
+    fxstart2 = ProcessStart('firefox.exe')
+    ready = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), ReadyThread()])
     interval2 = XPerfInterval(fxstart2, ready)
     etl.add_attr(interval2)
 
