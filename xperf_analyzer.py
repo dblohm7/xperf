@@ -31,15 +31,18 @@ class XPerfAttribute:
         self.persistent = persistent
 
     def set_session(self, sess):
+        if sess:
+          sess.evtset.update(self.evtlist)
+          sess.attrs.add(self)
+        else:
+          self.sess.evtset.difference_update(self.evtlist)
         self.sess = sess
-        sess.evtset.update(self.evtlist)
-        sess.attrs.add(self)
 
     def get_field_index(self, key, field):
         return self.sess.evtkey[key][field]
 
     def on_event_matched(self, evt):
-        if not evt in self.evtlist:
+        if evt not in self.evtlist:
             raise ValueError(f"Event mismatch: \"{evt!s}\" is not in this attribute's event list")
         if not self.persistent:
             self.evtlist.remove(evt)
@@ -54,11 +57,24 @@ class XPerfAttribute:
         self.sess.attrs.remove(self)
 
 class XPerfInterval(XPerfAttribute):
-    def __init__(self, startevt, endevt):
+    def __init__(self, startevt, endevt, while_attrs=[]):
         XPerfAttribute.__init__(self, [startevt, endevt])
+        self.while_attrs = while_attrs
+
+    def on_event_matched(self, evt):
+        if evt == self.evtlist[0]:
+            # first event, add while_attrs
+            for a in self.while_attrs:
+                a.set_session(self.sess)
+        elif evt == self.evtlist[-1]:
+            for a in self.while_attrs:
+                a.set_session(None)
+        super().on_event_matched(evt)
 
     def process(self):
         super().process()
+        for a in self.while_attrs:
+            a.process()
         end = self.seen_evtlist[-1]
         start = self.seen_evtlist[0]
         duration = end.get_timestamp() - start.get_timestamp()
@@ -281,7 +297,7 @@ class ProcessStart(XPerfEvent):
         pid = int(m.group(1))
         self.data[XPerfEvent.EVENT_DATA_PID] = pid
 
-        if not XPerfEvent.EVENT_DATA_CMD_LINE in self.data:
+        if XPerfEvent.EVENT_DATA_CMD_LINE not in self.data:
             self.data[XPerfEvent.EVENT_DATA_CMD_LINE] = dict()
 
         self.data[XPerfEvent.EVENT_DATA_CMD_LINE][pid] = tokens
@@ -306,7 +322,7 @@ class ThreadStart(XPerfEvent):
             ThreadStart.process_index = self.get_field_index('Process Name ( PID)')
 
         m = ThreadStart.pid_extractor.match(row[ThreadStart.process_index])
-        if not self.data[XPerfEvent.EVENT_DATA_PID] == int(m.group(1)):
+        if self.data[XPerfEvent.EVENT_DATA_PID] != int(m.group(1)):
             return False
 
         if not ThreadStart.tid_index:
@@ -334,7 +350,7 @@ class ReadyThread(XPerfEvent):
         if not ReadyThread.tid_index:
             ReadyThread.tid_index = self.get_field_index('Rdy TID')
 
-        if not XPerfEvent.EVENT_DATA_TID in self.data:
+        if XPerfEvent.EVENT_DATA_TID not in self.data:
             return False
 
         return self.data[XPerfEvent.EVENT_DATA_TID] == int(row[ReadyThread.tid_index])
@@ -355,7 +371,7 @@ class ContextSwitchToThread(XPerfEvent):
         if not ContextSwitchToThread.tid_index:
             ContextSwitchToThread.tid_index = self.get_field_index('New TID')
 
-        if not XPerfEvent.EVENT_DATA_TID in self.data:
+        if XPerfEvent.EVENT_DATA_TID not in self.data:
             return False
 
         return self.data[XPerfEvent.EVENT_DATA_TID] == int(row[ContextSwitchToThread.tid_index])
