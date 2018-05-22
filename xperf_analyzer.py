@@ -217,7 +217,7 @@ class ClassicEvent(XPerfEvent):
         return guid.int == self.guid.int
 
     def __str__(self):
-        return f"User event (classic): {self.guid!s}"
+        return f"User event (classic): [{self.guid!s}]"
 
 class SessionStoreWindowRestored(ClassicEvent):
     def __init__(self):
