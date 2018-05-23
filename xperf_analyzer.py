@@ -33,6 +33,9 @@ class XPerfAttribute:
         self.seen_evtlist = []
         self.persistent = persistent
 
+    def is_persistent(self):
+        return self.persistent
+
     def set_session(self, sess):
         if sess:
           sess.evtset.update(self.evtlist)
@@ -47,17 +50,29 @@ class XPerfAttribute:
     def on_event_matched(self, evt):
         if evt not in self.evtlist:
             raise ValueError(f"Event mismatch: \"{evt!s}\" is not in this attribute's event list")
-        if not self.persistent:
-            self.evtlist.remove(evt)
-            self.seen_evtlist.append(evt)
-            self.sess.evtset.remove(evt)
-            if len(self.evtlist):
-                self.evtlist[0].set_data(evt.get_data())
-        if not len(self.evtlist):
+
+        self.accumulate(evt)
+
+        if self.persistent:
+            return
+
+        self.remove_event(evt)
+
+        if len(self.evtlist):
+            self.evtlist[0].set_data(evt.get_data())
+        else:
             self.process()
+
+    def remove_event(self, evt):
+        self.evtlist.remove(evt)
+        self.seen_evtlist.append(evt)
+        self.sess.evtset.remove(evt)
 
     def process(self):
         self.sess.attrs.remove(self)
+
+    def accumulate(self, evt):
+        pass
 
 class XPerfInterval(XPerfAttribute):
     def __init__(self, startevt, endevt, while_attrs=[]):
@@ -86,15 +101,29 @@ class XPerfInterval(XPerfAttribute):
 class XPerfCounter(XPerfAttribute):
     def __init__(self, evt):
         XPerfAttribute.__init__(self, [evt], True)
+        self.values = dict()
+        self.count = 0
 
-    def __enter__(self):
-        return self
+    def accumulate(self, evt):
+        self.count += 1
+        data = evt.get_data()
+        fields = data[XPerfEvent.EVENT_ACCUMULATABLE_FIELDS]
+        for f in fields:
+            value = data[f]
+            try:
+                self.values[f] += value
+            except KeyError:
+                self.values[f] = value
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        if exc_type:
-            return
-
-        self.process()
+    def process(self):
+        self.remove_event(self.evtlist[0])
+        super().process()
+        msg = f"{self.count!s} [{self.seen_evtlist[0]!s}] events"
+        if len(self.values):
+            msg += " with"
+        for (k, v) in self.values.items():
+            msg += f" [[{k!s}] == {v!s}]"
+        print(msg)
 
 class XPerfEvent:
     # These keys are used to reference accumulated data that is passed across
@@ -102,6 +131,8 @@ class XPerfEvent:
     EVENT_DATA_PID = 'pid' # The pid recorded by a process or thread related event
     EVENT_DATA_CMD_LINE = 'cmd_line' # The command line recorded by a ProcessStart event
     EVENT_DATA_TID = 'tid' # The tid recorded by a thread related event
+    EVENT_NUM_BYTES = 'num_bytes' # Number of bytes recorded by an event that contains such quantities
+    EVENT_ACCUMULATABLE_FIELDS = 'accumulatable_fields'
 
     def __init__(self, key):
         self.key = key
@@ -110,6 +141,9 @@ class XPerfEvent:
 
     def set_attr(self, attr):
         self.attr = attr
+
+    def get_attr(self):
+        return self.attr
 
     def set_data(self, data):
         self.data = data
@@ -126,6 +160,7 @@ class XPerfEvent:
 
         if not self.timestamp_index:
             self.timestamp_index = self.get_field_index('TimeStamp')
+
         # Convert microseconds to milliseconds
         self.timestamp = float(row[self.timestamp_index]) / 1000.0
         self.attr.on_event_matched(self)
@@ -149,12 +184,15 @@ class Nth:
     def on_event_matched(self, evt):
         if evt != self.event:
             raise ValueError("We are not wrapping this event")
-        self.match_count = self.match_count + 1
+        self.match_count += 1
         if self.match_count == self.N:
             self.attr.on_event_matched(self)
 
     def set_attr(self, attr):
         self.attr = attr
+
+    def get_attr(self):
+        return self.attr
 
     def set_data(self, data):
         self.event.set_data(data)
@@ -195,19 +233,27 @@ class WhenThen:
         self.seen_events = []
 
     def on_event_matched(self, evt):
-        if evt != self.events[0]:
+        unseen_events = len(self.events) > 0
+        if unseen_events and evt != self.events[0] or not unseen_events and evt != self.seen_events[-1]:
             raise ValueError("We are not executing this event")
+
         # Move the event from events queue to seen_events
-        self.events.popleft()
-        self.seen_events.append(evt)
+        if unseen_events:
+            self.events.popleft()
+            self.seen_events.append(evt)
+
         if len(self.events):
             # Transfer event data to the next event that will run
             self.events[0].set_data(evt.get_data())
         else:
+            # Or else we have run all of our events; notify the attribute
             self.attr.on_event_matched(self)
 
     def set_attr(self, attr):
         self.attr = attr
+
+    def get_attr(self):
+        return self.attr
 
     def set_data(self, data):
         self.events[0].set_data(data)
@@ -219,7 +265,11 @@ class WhenThen:
         return self.attr.get_field_index(key, field)
 
     def do_match(self, row):
-        self.events[0].do_match(row)
+        if self.attr.is_persistent() and len(self.events) == 0:
+            # Persistent attributes may repeatedly match the final event
+            self.seen_events[-1].do_match(row)
+        else:
+            self.events[0].do_match(row)
 
     def get_timestamp(self):
         return self.seen_events[-1].get_timestamp()
@@ -230,6 +280,48 @@ class WhenThen:
             result += f"When [{e!s}], "
         result += f"then [{self.seen_events[-1]!s}]"
         return result
+
+class BindThread:
+    def __init__(self, event):
+        self.event = event
+        self.event.set_attr(self)
+        self.tid = None
+
+    def on_event_matched(self, evt):
+        if evt != self.event:
+            raise ValueError("We are not wrapping this event")
+        self.attr.on_event_matched(self)
+
+    def set_attr(self, attr):
+        self.attr = attr
+
+    def get_attr(self):
+        return self.attr
+
+    def set_data(self, data):
+        self.tid = data[XPerfEvent.EVENT_DATA_TID]
+        self.event.set_data(data)
+
+    def get_data(self):
+        return self.event.get_data()
+
+    def get_field_index(self, key, field):
+        return self.attr.get_field_index(key, field)
+
+    def do_match(self, row):
+        try:
+            tid_index = self.get_field_index(row[0], 'ThreadID')
+        except KeyError:
+            return
+
+        if int(row[tid_index]) == self.tid:
+            self.event.do_match(row)
+
+    def get_timestamp(self):
+        return self.event.get_timestamp()
+
+    def __str__(self):
+        return f"[{self.event!s}] bound to thread [{self.tid!s}]"
 
 class ClassicEvent(XPerfEvent):
     guid_index = None
@@ -311,11 +403,8 @@ class ProcessStart(XPerfEvent):
         m = ProcessStart.pid_extractor.match(row[ProcessStart.process_index])
         pid = int(m.group(1))
         self.data[XPerfEvent.EVENT_DATA_PID] = pid
+        self.data[XPerfEvent.EVENT_DATA_CMD_LINE] = {pid: tokens}
 
-        if XPerfEvent.EVENT_DATA_CMD_LINE not in self.data:
-            self.data[XPerfEvent.EVENT_DATA_CMD_LINE] = dict()
-
-        self.data[XPerfEvent.EVENT_DATA_CMD_LINE][pid] = tokens
         return True
 
     def __str__(self):
@@ -365,10 +454,10 @@ class ReadyThread(XPerfEvent):
         if not ReadyThread.tid_index:
             ReadyThread.tid_index = self.get_field_index('Rdy TID')
 
-        if XPerfEvent.EVENT_DATA_TID not in self.data:
+        try:
+            return self.data[XPerfEvent.EVENT_DATA_TID] == int(row[ReadyThread.tid_index])
+        except KeyError:
             return False
-
-        return self.data[XPerfEvent.EVENT_DATA_TID] == int(row[ReadyThread.tid_index])
 
     def __str__(self):
         return f"Thread [{self.data[XPerfEvent.EVENT_DATA_TID]!s}] is ready"
@@ -386,13 +475,49 @@ class ContextSwitchToThread(XPerfEvent):
         if not ContextSwitchToThread.tid_index:
             ContextSwitchToThread.tid_index = self.get_field_index('New TID')
 
-        if XPerfEvent.EVENT_DATA_TID not in self.data:
+        try:
+            return self.data[XPerfEvent.EVENT_DATA_TID] == int(row[ContextSwitchToThread.tid_index])
+        except KeyError:
             return False
-
-        return self.data[XPerfEvent.EVENT_DATA_TID] == int(row[ContextSwitchToThread.tid_index])
 
     def __str__(self):
         return f"Context switch to thread [{self.data[XPerfEvent.EVENT_DATA_TID]!s}]"
+
+class FileIOReadOrWrite(XPerfEvent):
+    READ = False
+    WRITE = True
+
+    tid_index = None
+    num_bytes_index = None
+
+    def __init__(self, verb):
+        if verb:
+            evt_name = 'FileIoWrite'
+            self.verb = 'Write'
+        else:
+            evt_name = 'FileIoRead'
+            self.verb = 'Read'
+
+        XPerfEvent.__init__(self, evt_name)
+
+    def match(self, row):
+        if not super().match(row):
+            return False
+
+        if not FileIOReadOrWrite.tid_index:
+            FileIOReadOrWrite.tid_index = self.get_field_index('ThreadID')
+
+        if not FileIOReadOrWrite.num_bytes_index:
+            FileIOReadOrWrite.num_bytes_index = self.get_field_index('Size')
+
+        self.data[XPerfEvent.EVENT_DATA_TID] = int(row[FileIOReadOrWrite.tid_index])
+        self.data[XPerfEvent.EVENT_NUM_BYTES] = int(row[FileIOReadOrWrite.num_bytes_index], 0)
+        self.data[XPerfEvent.EVENT_ACCUMULATABLE_FIELDS] = { XPerfEvent.EVENT_NUM_BYTES }
+
+        return True
+
+    def __str__(self):
+        return f"File I/O Bytes {self.verb}"
 
 class XPerfFile:
     def __init__(self, **kwargs):
@@ -506,7 +631,7 @@ class XPerfFile:
                 continue
 
             if state >= 1:
-                state = state + 1
+                state += 1
 
             if state > 2:
                 yield row
@@ -551,7 +676,13 @@ def main():
         interval2 = XPerfInterval(fxstart2, ready)
         etl.add_attr(interval2)
 
+        browser_main_thread_file_io_read = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), BindThread(FileIOReadOrWrite(FileIOReadOrWrite.READ))])
+        read_counter = XPerfCounter(browser_main_thread_file_io_read)
+        etl.add_attr(read_counter)
+
         etl.analyze()
+
+        read_counter.process()
 
 if __name__ == "__main__":
     main()
