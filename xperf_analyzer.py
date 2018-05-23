@@ -7,7 +7,10 @@
 from collections import deque
 import argparse
 import csv
+import os
+import os.path
 import re
+import subprocess
 from uuid import UUID
 
 class XPerfSession:
@@ -78,7 +81,7 @@ class XPerfInterval(XPerfAttribute):
         end = self.seen_evtlist[-1]
         start = self.seen_evtlist[0]
         duration = end.get_timestamp() - start.get_timestamp()
-        print(f"Interval from [{start!s}] to [{end!s}] took [{duration!s}] milliseconds.")
+        print(f"Interval from [{start!s}] to [{end!s}] took [{duration:.3f}] milliseconds.")
 
 class XPerfCounter(XPerfAttribute):
     def __init__(self, evt):
@@ -139,6 +142,7 @@ class Nth:
         self.event = event
         self.N = N
         self.match_count = 0
+        self.get_suffix()
         # We act as the "attr" for self.event
         self.event.set_attr(self)
 
@@ -167,8 +171,19 @@ class Nth:
     def get_timestamp(self):
         return self.event.get_timestamp()
 
+    def get_suffix(self):
+        lastDigit = str(self.N)[-1]
+        if lastDigit == '1':
+            self.suffix = 'st'
+        elif lastDigit == '2':
+            self.suffix = 'nd'
+        elif lastDigit == '3':
+            self.suffix = 'rd'
+        else:
+            self.suffix = 'th'
+
     def __str__(self):
-        return f"{self.N!s}th [{self.event!s}]"
+        return f"{self.N!s}{self.suffix} [{self.event!s}]"
 
 class WhenThen:
     def __init__(self, events):
@@ -380,22 +395,92 @@ class ContextSwitchToThread(XPerfEvent):
         return f"Context switch to thread [{self.data[XPerfEvent.EVENT_DATA_TID]!s}]"
 
 class XPerfFile:
-    def __init__(self, etlfile=None, csvfile=None):
-        self.etlfile = etlfile
-        self.csvfile = csvfile
+    def __init__(self, **kwargs):
+        self.csv_fd = None
+        self.csvfile = None
+        self.csvout = None
+        self.etlfile = None
+        self.keepcsv = False
+        self.xperf_path = None
+
+        if 'etlfile' in kwargs:
+            self.etlfile = os.path.abspath(kwargs['etlfile'])
+        elif 'etluser' in kwargs and 'etlkernel' in kwargs:
+            self.etl_merge_user_kernel(**kwargs)
+        elif 'csvfile' not in kwargs:
+            raise ValueError('Missing parameters: etl or csv files required')
+
+        if self.etlfile:
+            self.etl2csv()
+            if kwargs['csvout']:
+                self.csvout = os.path.abspath(kwargs['csvout'])
+        else:
+            self.csvfile = os.path.abspath(kwargs['csvfile'])
+
+        self.keepcsv = kwargs['keepcsv']
         self.sess = XPerfSession()
 
     def add_attr(self, attr):
         attr.set_session(self.sess)
 
-    def load(self):
-        if self.etlfile:
-            self.csvfile = etl2csv(self.etlfile)
+    def get_xperf_path(self):
+        if self.xperf_path:
+            return self.xperf_path
 
+        leaf_name = 'xperf.exe'
+        access_flags = os.R_OK | os.X_OK
+        path_entries = os.environ['PATH'].split(os.pathsep)
+        for entry in path_entries:
+            full = os.path.join(entry, leaf_name)
+            if os.access(full, access_flags):
+                self.xperf_path = os.path.abspath(full)
+                return self.xperf_path
+
+        raise Exception('Cannot find xperf')
+
+    def etl_merge_user_kernel(self, **kwargs):
+        user = os.path.abspath(kwargs['etluser'])
+        kernel = os.path.abspath(kwargs['etlkernel'])
+        (base, leaf) = os.path.split(user)
+        merged = os.path.join(base, 'merged.etl')
+
+        xperf_cmd = [self.get_xperf_path(), '-merge', user, kernel, merged]
+        subprocess.call(xperf_cmd)
+        self.etlfile = merged
+
+    def etl2csv(self):
+        if self.csvout:
+            abs_csv_name = self.csvout
+        else:
+            (base, leaf) = os.path.split(self.etlfile)
+            (leaf, ext) = os.path.splitext(leaf)
+            abs_csv_name = os.path.join(base, f"{leaf}.csv")
+
+        xperf_cmd = [self.get_xperf_path(), '-i', self.etlfile, '-o', abs_csv_name]
+        subprocess.call(xperf_cmd)
+        self.csvfile = abs_csv_name
+
+    def __enter__(self):
+        if not self.load():
+            raise Exception('Load failed')
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.csv_fd:
+            self.csv_fd.close()
+        if not self.csvout and not self.keepcsv:
+            os.remove(self.csvfile)
+
+    def load(self):
         if not self.csvfile:
             return False
 
-        self.data = self.filter_xperf_header(csv.reader(open(self.csvfile, newline=''), delimiter=',', quotechar='"', quoting=csv.QUOTE_NONE, skipinitialspace=True))
+        self.csv_fd = open(self.csvfile, newline='')
+        self.data = self.filter_xperf_header(csv.reader(self.csv_fd,
+                                                        delimiter=',',
+                                                        quotechar='"',
+                                                        quoting=csv.QUOTE_NONE,
+                                                        skipinitialspace=True))
 
         return True
 
@@ -435,27 +520,38 @@ class XPerfFile:
 
 def main():
     parser = argparse.ArgumentParser();
-    reqd_group=parser.add_mutually_exclusive_group(required=True)
-    reqd_group.add_argument('--etl', help='An input .etl file')
-    reqd_group.add_argument('--csvin', help='An input .csv file previously converted from an .etl file')
-    parser.add_argument('--csvout', required=False, help='Specify a path to save the interim csv to disk')
+    subparsers = parser.add_subparsers()
+
+    etl_parser = subparsers.add_parser('etl', help='Input consists of one .etl file')
+    etl_parser.add_argument("etlfile", type=str, help="Path to a single .etl containing merged kernel and user mode data")
+    etl_parser.add_argument('--csvout', required=False, help='Specify a path to save the interim csv file to disk')
+    etl_parser.add_argument('--keepcsv', required=False, help='Do not delete the interim csv file that was written to disk', action='store_true')
+
+    etls_parser = subparsers.add_parser('etls', help='Input consists of two .etl files')
+    etls_parser.add_argument("--user", type=str, help="Path to a user-mode .etl file", dest='etluser', required=True)
+    etls_parser.add_argument("--kernel", type=str, help="Path to a kernel-mode .etl file", dest='etlkernel', required=True)
+    etls_parser.add_argument('--csvout', required=False, help='Specify a path to save the interim csv file to disk')
+    etls_parser.add_argument('--keepcsv', required=False, help='Do not delete the interim csv file that was written to disk', action='store_true')
+
+    csv_parser = subparsers.add_parser('csv', help='Input consists of one .csv file')
+    csv_parser.add_argument("csvfile", type=str, help="Path to a .csv file generated by xperf")
+    # We always set --keepcsv when running in csv mode
+    csv_parser.add_argument('--keepcsv', required=False, help=argparse.SUPPRESS, action='store_true', default=True)
+
     args = parser.parse_args()
 
-    etl=XPerfFile(etlfile=args.etl, csvfile=args.csvin)
-    etl.load()
+    with XPerfFile(**vars(args)) as etl:
+        fxstart1 = ProcessStart('firefox.exe')
+        sess_restore = SessionStoreWindowRestored()
+        interval1 = XPerfInterval(fxstart1, sess_restore)
+        etl.add_attr(interval1)
 
-    fxstart1 = ProcessStart('firefox.exe')
-    sess_restore = SessionStoreWindowRestored()
-    interval1 = XPerfInterval(fxstart1, sess_restore)
-    etl.add_attr(interval1)
+        fxstart2 = ProcessStart('firefox.exe')
+        ready = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), ReadyThread()])
+        interval2 = XPerfInterval(fxstart2, ready)
+        etl.add_attr(interval2)
 
-    fxstart2 = ProcessStart('firefox.exe')
-    ready = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), ReadyThread()])
-    interval2 = XPerfInterval(fxstart2, ready)
-    etl.add_attr(interval2)
-
-    etl.analyze()
-
+        etl.analyze()
 
 if __name__ == "__main__":
     main()
