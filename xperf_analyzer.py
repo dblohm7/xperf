@@ -26,7 +26,10 @@ class XPerfSession:
             e.do_match(row)
 
 class XPerfAttribute:
-    def __init__(self, events, persistent=False):
+    PERSISTENT = True
+    NON_PERSISTENT = False
+
+    def __init__(self, events, persistent=NON_PERSISTENT):
         for e in events:
             e.set_attr(self)
         self.evtlist = events
@@ -75,23 +78,29 @@ class XPerfAttribute:
         pass
 
 class XPerfInterval(XPerfAttribute):
-    def __init__(self, startevt, endevt, while_attrs=[]):
+    def __init__(self, startevt, endevt, attrs_during_interval=None):
         XPerfAttribute.__init__(self, [startevt, endevt])
-        self.while_attrs = while_attrs
+        if attrs_during_interval == None:
+            self.attrs_during_interval = []
+        else:
+            if isinstance(attrs_during_interval, list):
+                self.attrs_during_interval = attrs_during_interval
+            else:
+                self.attrs_during_interval = [attrs_during_interval]
 
     def on_event_matched(self, evt):
         if evt == self.evtlist[0]:
-            # first event, add while_attrs
-            for a in self.while_attrs:
+            # first event, add attrs_during_interval
+            for a in self.attrs_during_interval:
                 a.set_session(self.sess)
         elif evt == self.evtlist[-1]:
-            for a in self.while_attrs:
+            for a in self.attrs_during_interval:
                 a.set_session(None)
         super().on_event_matched(evt)
 
     def process(self):
         super().process()
-        for a in self.while_attrs:
+        for a in self.attrs_during_interval:
             a.process()
         end = self.seen_evtlist[-1]
         start = self.seen_evtlist[0]
@@ -100,7 +109,7 @@ class XPerfInterval(XPerfAttribute):
 
 class XPerfCounter(XPerfAttribute):
     def __init__(self, evt):
-        XPerfAttribute.__init__(self, [evt], True)
+        XPerfAttribute.__init__(self, [evt], XPerfAttribute.PERSISTENT)
         self.values = dict()
         self.count = 0
 
@@ -118,9 +127,9 @@ class XPerfCounter(XPerfAttribute):
     def process(self):
         self.remove_event(self.evtlist[0])
         super().process()
-        msg = f"{self.count!s} [{self.seen_evtlist[0]!s}] events"
+        msg = f"[{self.count!s}] events of type [{self.seen_evtlist[0]!s}]"
         if len(self.values):
-            msg += " with"
+            msg += " with accumulated"
         for (k, v) in self.values.items():
             msg += f" [[{k!s}] == {v!s}]"
         print(msg)
@@ -132,6 +141,8 @@ class XPerfEvent:
     EVENT_DATA_CMD_LINE = 'cmd_line' # The command line recorded by a ProcessStart event
     EVENT_DATA_TID = 'tid' # The tid recorded by a thread related event
     EVENT_NUM_BYTES = 'num_bytes' # Number of bytes recorded by an event that contains such quantities
+    # Set of field names that may be accumulated -- this is not a native XPerf
+    # field, but rather is specified by the concrete event implementation.
     EVENT_ACCUMULATABLE_FIELDS = 'accumulatable_fields'
 
     def __init__(self, key):
@@ -536,9 +547,9 @@ class XPerfFile:
             raise ValueError('Missing parameters: etl or csv files required')
 
         if self.etlfile:
-            self.etl2csv()
             if kwargs['csvout']:
                 self.csvout = os.path.abspath(kwargs['csvout'])
+            self.etl2csv()
         else:
             self.csvfile = os.path.abspath(kwargs['csvfile'])
 
@@ -678,11 +689,25 @@ def main():
 
         browser_main_thread_file_io_read = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), BindThread(FileIOReadOrWrite(FileIOReadOrWrite.READ))])
         read_counter = XPerfCounter(browser_main_thread_file_io_read)
-        etl.add_attr(read_counter)
+        # etl.add_attr(read_counter)
+
+        browser_main_thread_file_io_write = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), BindThread(FileIOReadOrWrite(FileIOReadOrWrite.WRITE))])
+        write_counter = XPerfCounter(browser_main_thread_file_io_write)
+        # etl.add_attr(write_counter)
+
+        # This is equivalent to the old-style xperf test (with launcher)
+        parent_process_started = Nth(2, ProcessStart('firefox.exe'))
+        interval3 = XPerfInterval(parent_process_started, SessionStoreWindowRestored(), read_counter)
+        etl.add_attr(interval3)
+
+        parent_process_started2 = Nth(2, ProcessStart('firefox.exe'))
+        interval4 = XPerfInterval(parent_process_started2, SessionStoreWindowRestored(), write_counter)
+        etl.add_attr(interval4)
 
         etl.analyze()
 
-        read_counter.process()
+        # read_counter.process()
+        # write_counter.process()
 
 if __name__ == "__main__":
     main()
