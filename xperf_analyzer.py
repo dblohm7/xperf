@@ -412,7 +412,7 @@ class ClassicEvent(XPerfEvent):
         return guid.int == self.guid.int
 
     def __str__(self):
-        return f"User event (classic): [{self.guid!s}]"
+        return f"User event (classic): [{{{self.guid!s}}}]"
 
 class SessionStoreWindowRestored(ClassicEvent):
     def __init__(self):
@@ -420,31 +420,6 @@ class SessionStoreWindowRestored(ClassicEvent):
 
     def __str__(self):
         return "Firefox Session Store Window Restored"
-
-def tokenize_cmd_line(cmd_line_str):
-    result = []
-    quoted = False
-    current = str()
-
-    for c in cmd_line_str:
-        if quoted:
-            if c == '"':
-                quoted = False
-        else:
-            if c == '"':
-                quoted = True
-            elif c == ' ':
-                result.append(current)
-                current = str()
-                continue
-
-        current += c
-
-    # Capture the final token
-    if current:
-        result.append(current)
-
-    return [ t.strip('"') for t in result ]
 
 class ProcessStart(XPerfEvent):
     cmd_line_index = None
@@ -455,6 +430,32 @@ class ProcessStart(XPerfEvent):
         XPerfEvent.__init__(self, 'P-Start')
         self.leafname = leafname.lower()
 
+    @staticmethod
+    def tokenize_cmd_line(cmd_line_str):
+        result = []
+        quoted = False
+        current = str()
+
+        for c in cmd_line_str:
+            if quoted:
+                if c == '"':
+                    quoted = False
+            else:
+                if c == '"':
+                    quoted = True
+                elif c == ' ':
+                    result.append(current)
+                    current = str()
+                    continue
+
+            current += c
+
+        # Capture the final token
+        if current:
+            result.append(current)
+
+        return [ t.strip('"') for t in result ]
+
     def match(self, row):
         if not super().match(row):
             return False
@@ -463,10 +464,10 @@ class ProcessStart(XPerfEvent):
             ProcessStart.cmd_line_index = self.get_field_index('Command Line')
 
         cmd_line = row[ProcessStart.cmd_line_index]
-        tokens = tokenize_cmd_line(cmd_line)
-        executable = tokens[0].lower()
+        tokens = ProcessStart.tokenize_cmd_line(cmd_line)
+        executable = os.path.basename(tokens[0]).lower()
 
-        if not executable.endswith(self.leafname):
+        if not executable == self.leafname:
             return False
 
         if not ProcessStart.process_index:
@@ -474,6 +475,7 @@ class ProcessStart(XPerfEvent):
 
         m = ProcessStart.pid_extractor.match(row[ProcessStart.process_index])
         pid = int(m.group(1))
+
         self.data[XPerfEvent.EVENT_DATA_PID] = pid
         self.data[XPerfEvent.EVENT_DATA_CMD_LINE] = {pid: tokens}
 
