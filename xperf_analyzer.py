@@ -4,8 +4,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from abc import (ABC, abstractmethod)
 from collections import deque
-import argparse
 import csv
 import os
 import os.path
@@ -25,16 +25,24 @@ class XPerfSession:
         for e in local_evtset:
             e.do_match(row)
 
-class XPerfAttribute:
-    PERSISTENT = True
+class XPerfAttribute(ABC):
+    ACCUMULATIONS = 'XPerfAttribute.ACCUMULATIONS'
+    NAME = 'XPerfAttribute.NAME'
     NON_PERSISTENT = False
+    PERSISTENT = True
+    RESULT = 'XPerfAttribute.RESULT'
+    SUB_ATTRIBUTES = 'XPerfAttribute.SUB_ATTRIBUTES'
 
-    def __init__(self, events, persistent=NON_PERSISTENT):
+    def __init__(self, events, persistent=NON_PERSISTENT, **kwargs):
         for e in events:
             e.set_attr(self)
         self.evtlist = events
         self.seen_evtlist = []
         self.persistent = persistent
+        try:
+            self.output = kwargs['output']
+        except KeyError:
+            self.output = lambda a: print(str(a))
 
     def is_persistent(self):
         return self.persistent
@@ -61,32 +69,42 @@ class XPerfAttribute:
 
         self.remove_event(evt)
 
-        if len(self.evtlist):
+        if self.evtlist:
             self.evtlist[0].set_data(evt.get_data())
         else:
-            self.process()
+            self.do_process()
 
     def remove_event(self, evt):
         self.evtlist.remove(evt)
         self.seen_evtlist.append(evt)
         self.sess.evtset.remove(evt)
 
-    def process(self):
+    def do_process(self):
         self.sess.attrs.remove(self)
+        self.process()
+        self.output(self)
 
     def accumulate(self, evt):
         pass
 
+    @abstractmethod
+    def process(self):
+        pass
+
+    @abstractmethod
+    def get_results(self):
+        pass
+
 class XPerfInterval(XPerfAttribute):
-    def __init__(self, startevt, endevt, attrs_during_interval=None):
-        XPerfAttribute.__init__(self, [startevt, endevt])
-        if attrs_during_interval == None:
+    def __init__(self, startevt, endevt, attrs=None, **kwargs):
+        XPerfAttribute.__init__(self, [startevt, endevt], **kwargs)
+        if attrs == None:
             self.attrs_during_interval = []
         else:
-            if isinstance(attrs_during_interval, list):
-                self.attrs_during_interval = attrs_during_interval
+            if isinstance(attrs, list):
+                self.attrs_during_interval = attrs
             else:
-                self.attrs_during_interval = [attrs_during_interval]
+                self.attrs_during_interval = [attrs]
 
     def on_event_matched(self, evt):
         if evt == self.evtlist[0]:
@@ -99,17 +117,39 @@ class XPerfInterval(XPerfAttribute):
         super().on_event_matched(evt)
 
     def process(self):
-        super().process()
         for a in self.attrs_during_interval:
             a.process()
+
+    def __str__(self):
         end = self.seen_evtlist[-1]
         start = self.seen_evtlist[0]
         duration = end.get_timestamp() - start.get_timestamp()
-        print(f"Interval from [{start!s}] to [{end!s}] took [{duration:.3f}] milliseconds.")
+        msg = f"Interval from [{start!s}] to [{end!s}] took [{duration:.3f}] milliseconds."
+        if self.attrs_during_interval:
+            msg += " Within this interval:"
+            for attr in self.attrs_during_interval:
+                msg += f" {attr!s}"
+        return msg
+
+    def get_results(self):
+        end = self.seen_evtlist[-1]
+        start = self.seen_evtlist[0]
+        duration = end.get_timestamp() - start.get_timestamp()
+
+        sub_attrs = []
+        for attr in self.attrs_during_interval:
+            sub_attrs.append(attr.get_results())
+
+        results = { XPerfAttribute.NAME: self.__class__.__name__,
+                    XPerfAttribute.RESULT: duration }
+        if sub_attrs:
+            results[XPerfAttribute.SUB_ATTRIBUTES] = sub_attrs
+
+        return results
 
 class XPerfCounter(XPerfAttribute):
-    def __init__(self, evt):
-        XPerfAttribute.__init__(self, [evt], XPerfAttribute.PERSISTENT)
+    def __init__(self, evt, **kwargs):
+        XPerfAttribute.__init__(self, [evt], XPerfAttribute.PERSISTENT, **kwargs)
         self.values = dict()
         self.count = 0
 
@@ -126,13 +166,23 @@ class XPerfCounter(XPerfAttribute):
 
     def process(self):
         self.remove_event(self.evtlist[0])
-        super().process()
+
+    def __str__(self):
         msg = f"[{self.count!s}] events of type [{self.seen_evtlist[0]!s}]"
-        if len(self.values):
+        if self.values:
             msg += " with accumulated"
-        for (k, v) in self.values.items():
-            msg += f" [[{k!s}] == {v!s}]"
-        print(msg)
+            for (k, v) in self.values.items():
+                msg += f" [[{k!s}] == {v!s}]"
+        return msg
+
+    def get_results(self):
+        results = { XPerfAttribute.NAME: self.__class__.__name__,
+                    XPerfAttribute.RESULT: self.count }
+
+        if self.values:
+            results[XPerfAttribute.ACCUMULATIONS] = self.values
+
+        return results
 
 class XPerfEvent:
     # These keys are used to reference accumulated data that is passed across
@@ -183,8 +233,42 @@ class XPerfEvent:
     def get_timestamp(self):
         return self.timestamp
 
-class Nth:
+class EventExpression(ABC):
+    def __init__(self):
+        pass
+
+    def set_attr(self, attr):
+        self.attr = attr
+
+    def get_attr(self):
+        return self.attr
+
+    def get_field_index(self, key, field):
+        return self.attr.get_field_index(key, field)
+
+    @abstractmethod
+    def set_data(self, data):
+        pass
+
+    @abstractmethod
+    def get_data(self):
+        pass
+
+    @abstractmethod
+    def on_event_matched(self, evt):
+        pass
+
+    @abstractmethod
+    def do_match(self, row):
+        pass
+
+    @abstractmethod
+    def get_timestamp(self):
+        pass
+
+class Nth(EventExpression):
     def __init__(self, N, event):
+        EventExpression.__init__(self)
         self.event = event
         self.N = N
         self.match_count = 0
@@ -199,20 +283,11 @@ class Nth:
         if self.match_count == self.N:
             self.attr.on_event_matched(self)
 
-    def set_attr(self, attr):
-        self.attr = attr
-
-    def get_attr(self):
-        return self.attr
-
     def set_data(self, data):
         self.event.set_data(data)
 
     def get_data(self):
         return self.event.get_data()
-
-    def get_field_index(self, key, field):
-        return self.attr.get_field_index(key, field)
 
     def do_match(self, row):
         self.event.do_match(row)
@@ -234,8 +309,9 @@ class Nth:
     def __str__(self):
         return f"{self.N!s}{self.suffix} [{self.event!s}]"
 
-class WhenThen:
+class WhenThen(EventExpression):
     def __init__(self, events):
+        EventExpression.__init__(self)
         if len(events) < 2:
             raise ValueError("Why are you using this?")
         self.events = deque(events)
@@ -253,27 +329,18 @@ class WhenThen:
             self.events.popleft()
             self.seen_events.append(evt)
 
-        if len(self.events):
+        if self.events:
             # Transfer event data to the next event that will run
             self.events[0].set_data(evt.get_data())
         else:
             # Or else we have run all of our events; notify the attribute
             self.attr.on_event_matched(self)
 
-    def set_attr(self, attr):
-        self.attr = attr
-
-    def get_attr(self):
-        return self.attr
-
     def set_data(self, data):
         self.events[0].set_data(data)
 
     def get_data(self):
         return self.seen_events[-1].get_data()
-
-    def get_field_index(self, key, field):
-        return self.attr.get_field_index(key, field)
 
     def do_match(self, row):
         if self.attr.is_persistent() and len(self.events) == 0:
@@ -292,8 +359,9 @@ class WhenThen:
         result += f"then [{self.seen_events[-1]!s}]"
         return result
 
-class BindThread:
+class BindThread(EventExpression):
     def __init__(self, event):
+        EventExpression.__init__(self)
         self.event = event
         self.event.set_attr(self)
         self.tid = None
@@ -303,12 +371,6 @@ class BindThread:
             raise ValueError("We are not wrapping this event")
         self.attr.on_event_matched(self)
 
-    def set_attr(self, attr):
-        self.attr = attr
-
-    def get_attr(self):
-        return self.attr
-
     def set_data(self, data):
         self.tid = data[XPerfEvent.EVENT_DATA_TID]
         self.event.set_data(data)
@@ -316,13 +378,11 @@ class BindThread:
     def get_data(self):
         return self.event.get_data()
 
-    def get_field_index(self, key, field):
-        return self.attr.get_field_index(key, field)
-
     def do_match(self, row):
         try:
             tid_index = self.get_field_index(row[0], 'ThreadID')
         except KeyError:
+            # Not every event has a thread ID. We don't care about those.
             return
 
         if int(row[tid_index]) == self.tid:
@@ -347,6 +407,7 @@ class ClassicEvent(XPerfEvent):
 
         if not ClassicEvent.guid_index:
             ClassicEvent.guid_index = self.get_field_index('EventGuid')
+
         guid = UUID(row[ClassicEvent.guid_index])
         return guid.int == self.guid.int
 
@@ -380,7 +441,7 @@ def tokenize_cmd_line(cmd_line_str):
         current += c
 
     # Capture the final token
-    if len(current):
+    if current:
         result.append(current)
 
     return [ t.strip('"') for t in result ]
@@ -502,12 +563,13 @@ class FileIOReadOrWrite(XPerfEvent):
     num_bytes_index = None
 
     def __init__(self, verb):
+        self.verb = verb
         if verb:
             evt_name = 'FileIoWrite'
-            self.verb = 'Write'
+            self.strverb = 'Write'
         else:
             evt_name = 'FileIoRead'
-            self.verb = 'Read'
+            self.strverb = 'Read'
 
         XPerfEvent.__init__(self, evt_name)
 
@@ -528,7 +590,7 @@ class FileIOReadOrWrite(XPerfEvent):
         return True
 
     def __str__(self):
-        return f"File I/O Bytes {self.verb}"
+        return f"File I/O Bytes {self.strverb}"
 
 class XPerfFile:
     def __init__(self, **kwargs):
@@ -650,11 +712,13 @@ class XPerfFile:
     def analyze(self):
         for row in self.data:
             self.sess.match_events(row)
-            if len(self.sess.attrs) == 0:
+            if not self.sess.attrs:
                 # No more attrs to look for, we might as well quit
                 return
 
 def main():
+    import argparse
+
     parser = argparse.ArgumentParser();
     subparsers = parser.add_subparsers()
 
@@ -677,31 +741,37 @@ def main():
     args = parser.parse_args()
 
     with XPerfFile(**vars(args)) as etl:
+        def null_output(attr):
+            pass
+
+        def structured_output(attr):
+            print(f"Results: [{attr.get_results()!r}]")
+
         fxstart1 = ProcessStart('firefox.exe')
         sess_restore = SessionStoreWindowRestored()
-        interval1 = XPerfInterval(fxstart1, sess_restore)
+        interval1 = XPerfInterval(fxstart1, sess_restore, output=structured_output)
         etl.add_attr(interval1)
 
         fxstart2 = ProcessStart('firefox.exe')
         ready = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), ReadyThread()])
-        interval2 = XPerfInterval(fxstart2, ready)
+        interval2 = XPerfInterval(fxstart2, ready, output=structured_output)
         etl.add_attr(interval2)
 
         browser_main_thread_file_io_read = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), BindThread(FileIOReadOrWrite(FileIOReadOrWrite.READ))])
-        read_counter = XPerfCounter(browser_main_thread_file_io_read)
+        read_counter = XPerfCounter(browser_main_thread_file_io_read, output=structured_output)
         # etl.add_attr(read_counter)
 
         browser_main_thread_file_io_write = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), BindThread(FileIOReadOrWrite(FileIOReadOrWrite.WRITE))])
-        write_counter = XPerfCounter(browser_main_thread_file_io_write)
+        write_counter = XPerfCounter(browser_main_thread_file_io_write, output=structured_output)
         # etl.add_attr(write_counter)
 
         # This is equivalent to the old-style xperf test (with launcher)
         parent_process_started = Nth(2, ProcessStart('firefox.exe'))
-        interval3 = XPerfInterval(parent_process_started, SessionStoreWindowRestored(), read_counter)
+        interval3 = XPerfInterval(parent_process_started, SessionStoreWindowRestored(), read_counter, output=structured_output)
         etl.add_attr(interval3)
 
         parent_process_started2 = Nth(2, ProcessStart('firefox.exe'))
-        interval4 = XPerfInterval(parent_process_started2, SessionStoreWindowRestored(), write_counter)
+        interval4 = XPerfInterval(parent_process_started2, SessionStoreWindowRestored(), write_counter, output=structured_output)
         etl.add_attr(interval4)
 
         etl.analyze()
