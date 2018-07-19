@@ -152,11 +152,27 @@ class XPerfCounter(XPerfAttribute):
         XPerfAttribute.__init__(self, [evt], XPerfAttribute.PERSISTENT, **kwargs)
         self.values = dict()
         self.count = 0
+        try:
+            self.filters = kwargs['filters']
+        except KeyError:
+            self.filters = dict()
 
     def accumulate(self, evt):
-        self.count += 1
         data = evt.get_data()
+
+        for (key, comp) in self.filters.items():
+            try:
+                testdata = data[key]
+            except KeyError:
+                pass
+            else:
+                if not comp(testdata):
+                    return
+
+        self.count += 1
+
         fields = data[XPerfEvent.EVENT_ACCUMULATABLE_FIELDS]
+
         for f in fields:
             value = data[f]
             try:
@@ -191,6 +207,7 @@ class XPerfEvent:
     EVENT_DATA_CMD_LINE = 'cmd_line' # The command line recorded by a ProcessStart event
     EVENT_DATA_TID = 'tid' # The tid recorded by a thread related event
     EVENT_NUM_BYTES = 'num_bytes' # Number of bytes recorded by an event that contains such quantities
+    EVENT_FILE_NAME = 'file_name' # File name recorded by an I/O event
     # Set of field names that may be accumulated -- this is not a native XPerf
     # field, but rather is specified by the concrete event implementation.
     EVENT_ACCUMULATABLE_FIELDS = 'accumulatable_fields'
@@ -563,6 +580,7 @@ class FileIOReadOrWrite(XPerfEvent):
 
     tid_index = None
     num_bytes_index = None
+    file_name_index = None
 
     def __init__(self, verb):
         self.verb = verb
@@ -585,8 +603,12 @@ class FileIOReadOrWrite(XPerfEvent):
         if not FileIOReadOrWrite.num_bytes_index:
             FileIOReadOrWrite.num_bytes_index = self.get_field_index('Size')
 
+        if not FileIOReadOrWrite.file_name_index:
+            FileIOReadOrWrite.file_name_index = self.get_field_index('FileName')
+
         self.data[XPerfEvent.EVENT_DATA_TID] = int(row[FileIOReadOrWrite.tid_index])
         self.data[XPerfEvent.EVENT_NUM_BYTES] = int(row[FileIOReadOrWrite.num_bytes_index], 0)
+        self.data[XPerfEvent.EVENT_FILE_NAME] = row[FileIOReadOrWrite.file_name_index].strip('"')
         self.data[XPerfEvent.EVENT_ACCUMULATABLE_FIELDS] = { XPerfEvent.EVENT_NUM_BYTES }
 
         return True
@@ -750,6 +772,12 @@ if __name__ == "__main__":
             def structured_output(attr):
                 print(f"Results: [{attr.get_results()!r}]")
 
+            def test_filter_exclude_dll(file):
+                (base, ext) = os.path.splitext(file)
+                return ext.lower() != '.dll'
+
+            myfilters = { XPerfEvent.EVENT_FILE_NAME: test_filter_exclude_dll }
+
             fxstart1 = ProcessStart('firefox.exe')
             sess_restore = SessionStoreWindowRestored()
             interval1 = XPerfInterval(fxstart1, sess_restore, output=structured_output)
@@ -761,7 +789,7 @@ if __name__ == "__main__":
             etl.add_attr(interval2)
 
             browser_main_thread_file_io_read = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), BindThread(FileIOReadOrWrite(FileIOReadOrWrite.READ))])
-            read_counter = XPerfCounter(browser_main_thread_file_io_read, output=structured_output)
+            read_counter = XPerfCounter(browser_main_thread_file_io_read, output=structured_output, filters=myfilters)
             # etl.add_attr(read_counter)
 
             browser_main_thread_file_io_write = WhenThen([Nth(2, ProcessStart('firefox.exe')), ThreadStart(), BindThread(FileIOReadOrWrite(FileIOReadOrWrite.WRITE))])
