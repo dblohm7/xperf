@@ -639,7 +639,12 @@ class XPerfFile:
         else:
             self.csvfile = os.path.abspath(kwargs['csvfile'])
 
-        self.keepcsv = kwargs['keepcsv']
+        try:
+            self.keepcsv = kwargs['keepcsv']
+        except KeyError:
+            # If we've been supplied a csvfile, assume by default that we don't
+            # want that file deleted by us.
+            self.keepcsv = 'csvfile' in kwargs
         self.sess = XPerfSession()
 
     def add_attr(self, attr):
@@ -697,7 +702,7 @@ class XPerfFile:
         if not self.csvfile:
             return False
 
-        self.csv_fd = open(self.csvfile, newline='')
+        self.csv_fd = open(self.csvfile, newline='', errors='replace')
         self.data = self.filter_xperf_header(csv.reader(self.csv_fd,
                                                         delimiter=',',
                                                         quotechar='"',
