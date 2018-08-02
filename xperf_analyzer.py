@@ -48,10 +48,10 @@ class XPerfAttribute(ABC):
 
     def set_session(self, sess):
         if sess:
-          sess.evtset.update(self.evtlist)
-          sess.attrs.add(self)
+            sess.evtset.update(self.evtlist)
+            sess.attrs.add(self)
         else:
-          self.sess.evtset.difference_update(self.evtlist)
+            self.sess.evtset.difference_update(self.evtlist)
         self.sess = sess
 
     def get_field_index(self, key, field):
