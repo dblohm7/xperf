@@ -484,7 +484,7 @@ class ProcessStart(XPerfEvent):
         m = ProcessStart.extractor.match(row[ProcessStart.process_index])
         executable = m.group(1).lower()
 
-        if not executable == self.leafname:
+        if executable != self.leafname:
             return False
 
         pid = int(m.group(2))
