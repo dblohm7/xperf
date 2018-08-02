@@ -8,7 +8,6 @@ from abc import (ABC, abstractmethod)
 from collections import deque
 import csv
 import os
-import os.path
 import re
 import subprocess
 from uuid import UUID
@@ -42,7 +41,7 @@ class XPerfAttribute(ABC):
         try:
             self.output = kwargs['output']
         except KeyError:
-            self.output = lambda a: print(str(a))
+            self.output = lambda a: None
 
     def is_persistent(self):
         return self.persistent
@@ -98,7 +97,7 @@ class XPerfAttribute(ABC):
 class XPerfInterval(XPerfAttribute):
     def __init__(self, startevt, endevt, attrs=None, **kwargs):
         XPerfAttribute.__init__(self, [startevt, endevt], **kwargs)
-        if attrs == None:
+        if not attrs:
             self.attrs_during_interval = []
         else:
             if isinstance(attrs, list):
@@ -129,6 +128,7 @@ class XPerfInterval(XPerfAttribute):
             msg += " Within this interval:"
             for attr in self.attrs_during_interval:
                 msg += f" {attr!s}"
+        msg += f"\nStart: [{start.get_timestamp()}] End: [{end.get_timestamp()}]"
         return msg
 
     def get_results(self):
@@ -251,8 +251,14 @@ class XPerfEvent:
         return self.timestamp
 
 class EventExpression(ABC):
-    def __init__(self):
-        pass
+    def __init__(self, events):
+        # Event expressions implement the attribute interface, so for each
+        # event, we set ourselves as the underlying attribute
+        if isinstance(events, list):
+            for e in events:
+                e.set_attr(self)
+        else:
+            events.set_attr(self)
 
     def set_attr(self, attr):
         self.attr = attr
@@ -285,13 +291,11 @@ class EventExpression(ABC):
 
 class Nth(EventExpression):
     def __init__(self, N, event):
-        EventExpression.__init__(self)
+        EventExpression.__init__(self, event)
         self.event = event
         self.N = N
         self.match_count = 0
         self.get_suffix()
-        # We act as the "attr" for self.event
-        self.event.set_attr(self)
 
     def on_event_matched(self, evt):
         if evt != self.event:
@@ -328,12 +332,10 @@ class Nth(EventExpression):
 
 class WhenThen(EventExpression):
     def __init__(self, events):
-        EventExpression.__init__(self)
+        EventExpression.__init__(self, events)
         if len(events) < 2:
             raise ValueError("Why are you using this?")
         self.events = deque(events)
-        for e in self.events:
-            e.set_attr(self)
         self.seen_events = []
 
     def on_event_matched(self, evt):
@@ -378,9 +380,8 @@ class WhenThen(EventExpression):
 
 class BindThread(EventExpression):
     def __init__(self, event):
-        EventExpression.__init__(self)
+        EventExpression.__init__(self, event)
         self.event = event
-        self.event.set_attr(self)
         self.tid = None
 
     def on_event_matched(self, evt):
@@ -441,7 +442,7 @@ class SessionStoreWindowRestored(ClassicEvent):
 class ProcessStart(XPerfEvent):
     cmd_line_index = None
     process_index = None
-    pid_extractor = re.compile('[^(]+\((\d+)\)')
+    extractor = re.compile('([^ ]+) \((\d+)\)')
 
     def __init__(self, leafname):
         XPerfEvent.__init__(self, 'P-Start')
@@ -477,21 +478,22 @@ class ProcessStart(XPerfEvent):
         if not super().match(row):
             return False
 
+        if not ProcessStart.process_index:
+            ProcessStart.process_index = self.get_field_index('Process Name ( PID)')
+
+        m = ProcessStart.extractor.match(row[ProcessStart.process_index])
+        executable = m.group(1).lower()
+
+        if not executable == self.leafname:
+            return False
+
+        pid = int(m.group(2))
+
         if not ProcessStart.cmd_line_index:
             ProcessStart.cmd_line_index = self.get_field_index('Command Line')
 
         cmd_line = row[ProcessStart.cmd_line_index]
         tokens = ProcessStart.tokenize_cmd_line(cmd_line)
-        executable = os.path.basename(tokens[0]).lower()
-
-        if not executable == self.leafname:
-            return False
-
-        if not ProcessStart.process_index:
-            ProcessStart.process_index = self.get_field_index('Process Name ( PID)')
-
-        m = ProcessStart.pid_extractor.match(row[ProcessStart.process_index])
-        pid = int(m.group(1))
 
         self.data[XPerfEvent.EVENT_DATA_PID] = pid
         self.data[XPerfEvent.EVENT_DATA_CMD_LINE] = {pid: tokens}
@@ -645,6 +647,7 @@ class XPerfFile:
             # If we've been supplied a csvfile, assume by default that we don't
             # want that file deleted by us.
             self.keepcsv = 'csvfile' in kwargs
+
         self.sess = XPerfSession()
 
     def add_attr(self, attr):
@@ -715,7 +718,7 @@ class XPerfFile:
         state = -1
 
         for row in csvdata:
-            if not len(row):
+            if not row:
                 continue
 
             if state < 0:
@@ -785,7 +788,7 @@ if __name__ == "__main__":
 
             fxstart1 = ProcessStart('firefox.exe')
             sess_restore = SessionStoreWindowRestored()
-            interval1 = XPerfInterval(fxstart1, sess_restore, output=structured_output)
+            interval1 = XPerfInterval(fxstart1, sess_restore, output=lambda a: print(str(a)))
             etl.add_attr(interval1)
 
             fxstart2 = ProcessStart('firefox.exe')
