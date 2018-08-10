@@ -4,7 +4,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import print_function
+from __future__ import (absolute_import, print_function)
 from abc import (ABCMeta, abstractmethod)
 from collections import deque
 import csv
@@ -103,7 +103,7 @@ class XPerfAttribute(object):
 
 class XPerfInterval(XPerfAttribute):
     def __init__(self, startevt, endevt, attrs=None, **kwargs):
-        XPerfAttribute.__init__(self, [startevt, endevt], **kwargs)
+        super(XPerfInterval, self).__init__([startevt, endevt], **kwargs)
         if not attrs:
             self.attrs_during_interval = []
         else:
@@ -159,8 +159,8 @@ class XPerfInterval(XPerfAttribute):
 
 class XPerfCounter(XPerfAttribute):
     def __init__(self, evt, **kwargs):
-        XPerfAttribute.__init__(self, [evt], XPerfAttribute.PERSISTENT,
-                                **kwargs)
+        super(XPerfCounter, self).__init__([evt], XPerfAttribute.PERSISTENT,
+                                           **kwargs)
         self.values = dict()
         self.count = 0
         try:
@@ -313,7 +313,7 @@ class EventExpression(object):
 
 class Nth(EventExpression):
     def __init__(self, N, event):
-        EventExpression.__init__(self, event)
+        super(Nth, self).__init__(event)
         self.event = event
         self.N = N
         self.match_count = 0
@@ -355,7 +355,7 @@ class Nth(EventExpression):
 
 class WhenThen(EventExpression):
     def __init__(self, events):
-        EventExpression.__init__(self, events)
+        super(WhenThen, self).__init__(events)
         if len(events) < 2:
             raise ValueError("Why are you using this?")
         self.events = deque(events)
@@ -405,7 +405,7 @@ class WhenThen(EventExpression):
 
 class BindThread(EventExpression):
     def __init__(self, event):
-        EventExpression.__init__(self, event)
+        super(BindThread, self).__init__(event)
         self.event = event
         self.tid = None
 
@@ -442,7 +442,7 @@ class ClassicEvent(XPerfEvent):
     guid_index = None
 
     def __init__(self, guidstr):
-        XPerfEvent.__init__(self, 'UnknownEvent/Classic')
+        super(ClassicEvent, self).__init__('UnknownEvent/Classic')
         self.guid = UUID(guidstr)
 
     def match(self, row):
@@ -461,7 +461,8 @@ class ClassicEvent(XPerfEvent):
 
 class SessionStoreWindowRestored(ClassicEvent):
     def __init__(self):
-        ClassicEvent.__init__(self, '{917B96B1-ECAD-4DAB-A760-8D49027748AE}')
+        super(SessionStoreWindowRestored, self).__init__(
+            '{917B96B1-ECAD-4DAB-A760-8D49027748AE}')
 
     def __str__(self):
         return "Firefox Session Store Window Restored"
@@ -473,7 +474,7 @@ class ProcessStart(XPerfEvent):
     extractor = re.compile('^(.+) \(\s*(\d+)\)$')
 
     def __init__(self, leafname):
-        XPerfEvent.__init__(self, 'P-Start')
+        super(ProcessStart, self).__init__('P-Start')
         self.leafname = leafname.lower()
 
     @staticmethod
@@ -545,7 +546,7 @@ class ThreadStart(XPerfEvent):
     pid_extractor = re.compile('^.+ \(\s*(\d+)\)$')
 
     def __init__(self):
-        XPerfEvent.__init__(self, 'T-Start')
+        super(ThreadStart, self).__init__('T-Start')
 
     def match(self, row):
         if not super(ThreadStart, self).match(row):
@@ -575,7 +576,7 @@ class ReadyThread(XPerfEvent):
     tid_index = None
 
     def __init__(self):
-        XPerfEvent.__init__(self, 'ReadyThread')
+        super(ReadyThread, self).__init__('ReadyThread')
 
     def set_data(self, data):
         super(ReadyThread, self).set_data(data)
@@ -602,7 +603,7 @@ class ContextSwitchToThread(XPerfEvent):
     tid_index = None
 
     def __init__(self):
-        XPerfEvent.__init__(self, 'CSwitch')
+        super(ContextSwitchToThread, self).__init__('CSwitch')
 
     def match(self, row):
         if not super(ContextSwitchToThread, self).match(row):
@@ -639,7 +640,7 @@ class FileIOReadOrWrite(XPerfEvent):
             evt_name = 'FileIoRead'
             self.strverb = 'Read'
 
-        XPerfEvent.__init__(self, evt_name)
+        super(FileIOReadOrWrite, self).__init__(evt_name)
 
     def match(self, row):
         if not super(FileIOReadOrWrite, self).match(row):

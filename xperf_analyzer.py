@@ -100,7 +100,7 @@ class XPerfAttribute(ABC):
 
 class XPerfInterval(XPerfAttribute):
     def __init__(self, startevt, endevt, attrs=None, **kwargs):
-        XPerfAttribute.__init__(self, [startevt, endevt], **kwargs)
+        super().__init__([startevt, endevt], **kwargs)
         if not attrs:
             self.attrs_during_interval = []
         else:
@@ -156,8 +156,7 @@ class XPerfInterval(XPerfAttribute):
 
 class XPerfCounter(XPerfAttribute):
     def __init__(self, evt, **kwargs):
-        XPerfAttribute.__init__(self, [evt], XPerfAttribute.PERSISTENT,
-                                **kwargs)
+        super().__init__([evt], XPerfAttribute.PERSISTENT, **kwargs)
         self.values = dict()
         self.count = 0
         try:
@@ -307,7 +306,7 @@ class EventExpression(ABC):
 
 class Nth(EventExpression):
     def __init__(self, N, event):
-        EventExpression.__init__(self, event)
+        super().__init__(event)
         self.event = event
         self.N = N
         self.match_count = 0
@@ -349,7 +348,7 @@ class Nth(EventExpression):
 
 class WhenThen(EventExpression):
     def __init__(self, events):
-        EventExpression.__init__(self, events)
+        super().__init__(events)
         if len(events) < 2:
             raise ValueError("Why are you using this?")
         self.events = deque(events)
@@ -399,7 +398,7 @@ class WhenThen(EventExpression):
 
 class BindThread(EventExpression):
     def __init__(self, event):
-        EventExpression.__init__(self, event)
+        super().__init__(event)
         self.event = event
         self.tid = None
 
@@ -436,7 +435,7 @@ class ClassicEvent(XPerfEvent):
     guid_index = None
 
     def __init__(self, guidstr):
-        XPerfEvent.__init__(self, 'UnknownEvent/Classic')
+        super().__init__('UnknownEvent/Classic')
         self.guid = UUID(guidstr)
 
     def match(self, row):
@@ -455,7 +454,7 @@ class ClassicEvent(XPerfEvent):
 
 class SessionStoreWindowRestored(ClassicEvent):
     def __init__(self):
-        ClassicEvent.__init__(self, '{917B96B1-ECAD-4DAB-A760-8D49027748AE}')
+        super().__init__('{917B96B1-ECAD-4DAB-A760-8D49027748AE}')
 
     def __str__(self):
         return "Firefox Session Store Window Restored"
@@ -467,7 +466,7 @@ class ProcessStart(XPerfEvent):
     extractor = re.compile('^(.+) \(\s*(\d+)\)$')
 
     def __init__(self, leafname):
-        XPerfEvent.__init__(self, 'P-Start')
+        super().__init__('P-Start')
         self.leafname = leafname.lower()
 
     @staticmethod
@@ -539,7 +538,7 @@ class ThreadStart(XPerfEvent):
     pid_extractor = re.compile('^.+ \(\s*(\d+)\)$')
 
     def __init__(self):
-        XPerfEvent.__init__(self, 'T-Start')
+        super().__init__('T-Start')
 
     def match(self, row):
         if not super().match(row):
@@ -568,7 +567,7 @@ class ReadyThread(XPerfEvent):
     tid_index = None
 
     def __init__(self):
-        XPerfEvent.__init__(self, 'ReadyThread')
+        super().__init__('ReadyThread')
 
     def set_data(self, data):
         super().set_data(data)
@@ -594,7 +593,7 @@ class ContextSwitchToThread(XPerfEvent):
     tid_index = None
 
     def __init__(self):
-        XPerfEvent.__init__(self, 'CSwitch')
+        super().__init__('CSwitch')
 
     def match(self, row):
         if not super().match(row):
@@ -631,7 +630,7 @@ class FileIOReadOrWrite(XPerfEvent):
             evt_name = 'FileIoRead'
             self.strverb = 'Read'
 
-        XPerfEvent.__init__(self, evt_name)
+        super().__init__(evt_name)
 
     def match(self, row):
         if not super().match(row):
