@@ -88,7 +88,7 @@ class XPerfAttribute(object):
 
     def on_event_matched(self, evt):
         if evt not in self.evtlist:
-            raise ValueError("Event mismatch: \"{!s}\" is not in this "
+            raise Exception("Event mismatch: \"{!s}\" is not in this "
                              .format((evt)) + "attribute's event list")
 
         self.accumulate(evt)
@@ -344,7 +344,7 @@ class Nth(EventExpression):
 
     def on_event_matched(self, evt):
         if evt != self.event:
-            raise ValueError("We are not wrapping this event")
+            raise Exception("We are not wrapping this event")
         self.match_count += 1
         if self.match_count == self.N:
             self.attr.on_event_matched(self)
@@ -381,7 +381,7 @@ class EventSequence(EventExpression):
     def __init__(self, *events):
         super(EventSequence, self).__init__(list(events))
         if len(events) < 2:
-            raise ValueError("Why are you using this?")
+            raise Exception("Why are you using this?")
         self.events = deque(events)
         self.seen_events = []
 
@@ -389,7 +389,7 @@ class EventSequence(EventExpression):
         unseen_events = len(self.events) > 0
         if unseen_events and evt != self.events[0] or not unseen_events and \
            evt != self.seen_events[-1]:
-            raise ValueError("We are not executing this event")
+            raise Exception("We are not executing this event")
 
         # Move the event from events queue to seen_events
         if unseen_events:
@@ -435,7 +435,7 @@ class BindThread(EventExpression):
 
     def on_event_matched(self, evt):
         if evt != self.event:
-            raise ValueError("We are not wrapping this event")
+            raise Exception("We are not wrapping this event")
         self.attr.on_event_matched(self)
 
     def set_attr_data(self, data):
@@ -711,7 +711,7 @@ class XPerfFile(object):
         elif 'etluser' in kwargs and 'etlkernel' in kwargs:
             self.etl_merge_user_kernel(**kwargs)
         elif 'csvfile' not in kwargs:
-            raise ValueError('Missing parameters: etl or csv files required')
+            raise Exception('Missing parameters: etl or csv files required')
 
         if self.etlfile:
             if kwargs['csvout']:
