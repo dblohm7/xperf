@@ -795,20 +795,32 @@ class XPerfFile(object):
         return True
 
     def filter_xperf_header(self, csvdata):
-        state = -1
+        XPERF_CSV_NO_HEADER = -1
+        XPERF_CSV_IN_HEADER = 0
+        XPERF_CSV_END_HEADER_SEEN = 1
+        XPERF_CSV_PAST_HEADER = 2
 
-        for row in csvdata:
+        state = XPERF_CSV_NO_HEADER
+
+        while True:
+            try:
+                row = csvdata.next()
+            except StopIteration:
+                break
+            except csv.Error:
+                continue
+
             if not row:
                 continue
 
-            if state < 0:
+            if state < XPERF_CSV_IN_HEADER:
                 if row[0] == "BeginHeader":
-                    state = 0
+                    state = XPERF_CSV_IN_HEADER
                 continue
 
-            if state == 0:
+            if state == XPERF_CSV_IN_HEADER:
                 if row[0] == "EndHeader":
-                    state = 1
+                    state = XPERF_CSV_END_HEADER_SEEN
                     continue
 
                 # Map field names to indices
@@ -816,10 +828,10 @@ class XPerfFile(object):
                                                      enumerate(row[1:])})
                 continue
 
-            if state >= 1:
+            if state >= XPERF_CSV_END_HEADER_SEEN:
                 state += 1
 
-            if state > 2:
+            if state > XPERF_CSV_PAST_HEADER:
                 yield row
 
     def analyze(self):
