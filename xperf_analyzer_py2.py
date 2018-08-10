@@ -353,9 +353,9 @@ class Nth(EventExpression):
         return "{!s}{} [{!s}]".format((self.N), (suffix), (self.event))
 
 
-class WhenThen(EventExpression):
-    def __init__(self, events):
-        super(WhenThen, self).__init__(events)
+class EventSequence(EventExpression):
+    def __init__(self, *events):
+        super(EventSequence, self).__init__(list(events))
         if len(events) < 2:
             raise ValueError("Why are you using this?")
         self.events = deque(events)
@@ -875,23 +875,23 @@ if __name__ == "__main__":
             etl.add_attr(interval1)
 
             fxstart2 = ProcessStart('firefox.exe')
-            ready = WhenThen([Nth(2, ProcessStart('firefox.exe')),
-                             ThreadStart(), ReadyThread()])
+            ready = EventSequence(Nth(2, ProcessStart('firefox.exe')),
+                                  ThreadStart(), ReadyThread())
             interval2 = XPerfInterval(fxstart2, ready,
                                       output=structured_output)
             etl.add_attr(interval2)
 
-            browser_main_thread_file_io_read = WhenThen(
-                [Nth(2, ProcessStart('firefox.exe')), ThreadStart(),
-                 BindThread(FileIOReadOrWrite(FileIOReadOrWrite.READ))])
+            browser_main_thread_file_io_read = EventSequence(
+                Nth(2, ProcessStart('firefox.exe')), ThreadStart(),
+                BindThread(FileIOReadOrWrite(FileIOReadOrWrite.READ)))
             read_counter = XPerfCounter(browser_main_thread_file_io_read,
                                         output=structured_output,
                                         filters=myfilters)
             # etl.add_attr(read_counter)
 
-            browser_main_thread_file_io_write = WhenThen(
-                [Nth(2, ProcessStart('firefox.exe')), ThreadStart(),
-                 BindThread(FileIOReadOrWrite(FileIOReadOrWrite.WRITE))])
+            browser_main_thread_file_io_write = EventSequence(
+                Nth(2, ProcessStart('firefox.exe')), ThreadStart(),
+                BindThread(FileIOReadOrWrite(FileIOReadOrWrite.WRITE)))
             write_counter = XPerfCounter(browser_main_thread_file_io_write,
                                          output=structured_output)
             # etl.add_attr(write_counter)
