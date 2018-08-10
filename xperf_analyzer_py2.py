@@ -15,6 +15,11 @@ from uuid import UUID
 
 
 class XPerfSession(object):
+    """ This class encapsulates data that is retained for the term of the xperf
+    analysis. This includes the set of attributes, the set of events that are
+    owned by those attributes, and the mapping of field names to row indices.
+    """
+
     def __init__(self):
         self.attrs = set()
         self.evtkey = dict()
@@ -50,16 +55,63 @@ class XPerfSession(object):
 
 
 class XPerfAttribute(object):
+    """ Base class for all attributes. Each attribute has one or more events
+    that are associated with it. When those events fire, the attribute
+    accumulates statistics for those events.
+
+    Once all events for the attribute have fired, the attribute considers
+    itself to have completed, at which point its results may be retrieved. Note
+    that persistent attributes are an exception to this (see __init__).
+    """
+
     __metaclass__ = ABCMeta
 
+    # Keys for the dict returned by get_results:
+
+    # Key whose value should be a dict containing any statistics that were
+    # accumulated by this attribute.
     ACCUMULATIONS = 'XPerfAttribute.ACCUMULATIONS'
+
+    # The class name of this attribute.
     NAME = 'XPerfAttribute.NAME'
-    NON_PERSISTENT = False
-    PERSISTENT = True
+
+    # The primary result of the attribute.
     RESULT = 'XPerfAttribute.RESULT'
+
+    # Some attributes may themselves act as containers for other attributes.
+    # The results of those contained attributes should be added to a dict that
+    # is indexed by this key.
     SUB_ATTRIBUTES = 'XPerfAttribute.SUB_ATTRIBUTES'
 
+    # Other constants:
+    NON_PERSISTENT = False
+    PERSISTENT = True
+
     def __init__(self, events, persistent=NON_PERSISTENT, **kwargs):
+        """ Positional arguments:
+
+        events -- a list containing one or more events that will be associated
+                  with the attribute.
+
+        Keyword arguments:
+
+        persistent -- either XPerfAttribute.PERSISTENT or
+                      XPerfAttribute.NON_PERSISTENT. Non-persistent attributes
+                      retire their events as the events occur. The attributes
+                      consider themselves to have completed once all of their
+                      events have been retired. Persistent attributes never
+                      retire their events. This is useful for writing
+                      attributes that must accumulate data from an indefinite
+                      number of events. Once example scenario would be
+                      implementing a counter of file I/O events; we don't want
+                      to retire after the first file I/O event is encountered;
+                      we want to continue counting the events until the end of
+                      the analysis.
+
+        output -- an optional function that accepts a single argument that will
+                  be a reference to the attribute itself. This function will be
+                  called as soon as the attribute's results are available.
+        """
         for e in events:
             e.set_attr(self)
         self.evtlist = events
@@ -87,18 +139,25 @@ class XPerfAttribute(object):
         return self.sess.get_field_index(key, field)
 
     def on_event_matched(self, evt):
+        """ Attributes that override this method should always call super().
+
+        This method is called any time one of the attribute's events matches
+        the current event, which is passed in as the evt parameter.
+        """
         if evt not in self.evtlist:
             raise Exception("Event mismatch: \"{!s}\" is not in this "
                              .format((evt)) + "attribute's event list")
 
         self.accumulate(evt)
 
+        # Persistent attributes never retire their events
         if self.persistent:
             return
 
         self.remove_event(evt)
 
         if self.evtlist:
+            # Propagate the attribute data from the current event to the next
             self.evtlist[0].set_attr_data(evt.get_attr_data())
         else:
             self.do_process()
@@ -114,18 +173,33 @@ class XPerfAttribute(object):
         self.output(self)
 
     def accumulate(self, evt):
+        """ Optional method that an attribute may implement for the purposes
+        of accumulating data about multiple events.
+        """
         pass
 
     @abstractmethod
     def process(self):
+        """ This method is called once all of the attribute's events have been
+        retired.
+        """
         pass
 
     @abstractmethod
     def get_results(self):
+        """ This method is used to retrieve the attibute's results. It returns
+        a dict whose keys are any of the constants declared at the top of this
+        class. At the very least, the XPerfAttribute.NAME and
+        XPerfAttribute.RESULT keys must be set.
+        """
         pass
 
 
 class XPerfInterval(XPerfAttribute):
+    """ This attribute computes the duration of time between a start event and
+    and end event. It also accepts sub-attributes which are only active for the
+    duration of the interval.
+    """
     def __init__(self, startevt, endevt, attrs=None, **kwargs):
         super(XPerfInterval, self).__init__([startevt, endevt], **kwargs)
         if not attrs:
@@ -138,15 +212,19 @@ class XPerfInterval(XPerfAttribute):
 
     def on_event_matched(self, evt):
         if evt == self.evtlist[0]:
-            # first event, add attrs_during_interval
+            # When we see our start event, we need to activate our
+            # sub-attributes by setting their session to the same as ours.
             for a in self.attrs_during_interval:
                 a.set_session(self.sess)
         elif evt == self.evtlist[-1]:
+            # When we see our end event, we need to deactivate our
+            # sub-attributes by setting their session to None.
             for a in self.attrs_during_interval:
                 a.set_session(None)
         super(XPerfInterval, self).on_event_matched(evt)
 
     def process(self):
+        # Propagate the process call to our sub-attributes
         for a in self.attrs_during_interval:
             a.process()
 
@@ -165,6 +243,9 @@ class XPerfInterval(XPerfAttribute):
         return msg
 
     def get_results(self):
+        """ The result of an XPerf interval is the interval's duration, in
+        milliseconds. The results of the sub-attributes are also provided.
+        """
         end = self.seen_evtlist[-1]
         start = self.seen_evtlist[0]
         duration = end.get_timestamp() - start.get_timestamp()
@@ -182,7 +263,24 @@ class XPerfInterval(XPerfAttribute):
 
 
 class XPerfCounter(XPerfAttribute):
+    """ This persistent attribute computes the number of occurrences of the
+    event specified to __init__. It can also accumulate additional data from
+    the events.
+    """
+
     def __init__(self, evt, **kwargs):
+        """ Positional parameters:
+
+        evt -- The event to be counted.
+
+        Keyword arguments:
+
+        filters -- An optional argument that provides a dictionary that
+                   provides filters to be used to screen out unwanted events.
+                   They key points to one of the XPerfEvent constants, and the
+                   value is a function that evaluates the corresponding value
+                   from the event's attribute data.
+        """
         super(XPerfCounter, self).__init__([evt], XPerfAttribute.PERSISTENT,
                                            **kwargs)
         self.values = dict()
@@ -238,8 +336,18 @@ class XPerfCounter(XPerfAttribute):
 
 
 class XPerfEvent(object):
+    """ Base class for all events. An important feature of this class is the
+    attr_data variable. This variable is a dict that acts as a "whiteboard" for
+    passing values between successive events that are *owned by the same
+    attribute*.
+
+    This allows, for example, a thread ID from a scheduler event to be consumed
+    by a subsequent event that only wants to fire for particular thread IDs.
+    """
+
     # These keys are used to reference accumulated data that is passed across
-    # events by |self.attr_data|
+    # events by |self.attr_data|:
+
     # The pid recorded by a process or thread related event
     EVENT_DATA_PID = 'pid'
     # The command line recorded by a ProcessStart event
@@ -250,13 +358,15 @@ class XPerfEvent(object):
     EVENT_NUM_BYTES = 'num_bytes'
     # File name recorded by an I/O event
     EVENT_FILE_NAME = 'file_name'
-    # Set of field names that may be accumulated -- this is not a native XPerf
-    # field, but rather is specified by the concrete event implementation.
+    # Set of field names that may be accumulated by an XPerfCounter. The
+    # counter uses this to query the whiteboard for other EVENT_* keys that
+    # contain values that should be accumulated.
     EVENT_ACCUMULATABLE_FIELDS = 'accumulatable_fields'
+
+    timestamp_index = None
 
     def __init__(self, key):
         self.key = key
-        self.timestamp_index = None
         self.attr_data = dict()
 
     def set_attr(self, attr):
@@ -278,11 +388,13 @@ class XPerfEvent(object):
         if not self.match(row):
             return False
 
-        if not self.timestamp_index:
-            self.timestamp_index = self.get_field_index('TimeStamp')
+        # All events use the same index for timestamps, so timestamp_index can
+        # be a class variable.
+        if not XPerfEvent.timestamp_index:
+            XPerfEvent.timestamp_index = self.get_field_index('TimeStamp')
 
         # Convert microseconds to milliseconds
-        self.timestamp = float(row[self.timestamp_index]) / 1000.0
+        self.timestamp = float(row[XPerfEvent.timestamp_index]) / 1000.0
         self.attr.on_event_matched(self)
         return True
 
@@ -294,6 +406,14 @@ class XPerfEvent(object):
 
 
 class EventExpression(object):
+    """ EventExpression is an optional layer that sits between attibutes and
+    events, and allow the user to compose multiple events into a more complex
+    event. To achieve this, EventExpression implementations must implement both
+    the XPerfEvent interface (so that their underlying attributes may
+    communicate with them), as well as the XPerfAttribute interface, so that
+    they present themselves as attributes to the events that run above them.
+    """
+
     __metaclass__ = ABCMeta
 
     def __init__(self, events):
@@ -336,6 +456,9 @@ class EventExpression(object):
 
 
 class Nth(EventExpression):
+    """ This is a simple EventExpression that does not fire until the Nth
+    occurrence of the event that it encapsulates.
+    """
     def __init__(self, N, event):
         super(Nth, self).__init__(event)
         self.event = event
@@ -378,6 +501,18 @@ class Nth(EventExpression):
 
 
 class EventSequence(EventExpression):
+    """ This EventExpression represents a sequence of events that must fire in
+    the correct order. Once the final event in the sequence is received, then
+    the EventSequence fires itself.
+
+    One interesting point of note is what happens when one of the events passed
+    into the EventSequence is persistent. If a peristent event is supplied as
+    the final entry in the sequence, and since the persistent event never
+    retires itself, the sequence will keep firing every time the persistent
+    event fires. This allows the user to provide an event sequence that is
+    essentially interpreted as, "once all of these other events have triggered,
+    fire this last one repeatedly for the remainder of the analysis."
+    """
     def __init__(self, *events):
         super(EventSequence, self).__init__(list(events))
         if len(events) < 2:
@@ -428,6 +563,10 @@ class EventSequence(EventExpression):
 
 
 class BindThread(EventExpression):
+    """ This event expression binds the event that it encapsulates to a
+    specific thread ID. This is used to force an event to only fire when it
+    matches the thread ID supplied by the attr_data whiteboard.
+    """
     def __init__(self, event):
         super(BindThread, self).__init__(event)
         self.event = event
@@ -463,6 +602,9 @@ class BindThread(EventExpression):
 
 
 class ClassicEvent(XPerfEvent):
+    """ Classic ETW events are differentiated via a GUID. This class
+    implements the boilerplate for matching those events.
+    """
     guid_index = None
 
     def __init__(self, guidstr):
@@ -484,6 +626,7 @@ class ClassicEvent(XPerfEvent):
 
 
 class SessionStoreWindowRestored(ClassicEvent):
+    """ The Firefox session store window restored event """
     def __init__(self):
         super(SessionStoreWindowRestored, self).__init__(
             '{917B96B1-ECAD-4DAB-A760-8D49027748AE}')
@@ -566,6 +709,9 @@ class ProcessStart(XPerfEvent):
 
 
 class ThreadStart(XPerfEvent):
+    """ ThreadStart only fires for threads whose process matches the
+    XPerfEvent.EVENT_DATA_PID entry in the attr_data whiteboard.
+    """
     process_index = None
     tid_index = None
     pid_extractor = re.compile('^.+ \(\s*(\d+)\)$')
@@ -599,6 +745,10 @@ class ThreadStart(XPerfEvent):
 
 
 class ReadyThread(XPerfEvent):
+    """ ReadyThread only fires for the last thread whose ID was recorded in the
+    attr_data whiteboard via the XPerfEvent.EVENT_DATA_TID key.
+    """
+
     tid_index = None
 
     def __init__(self):
@@ -626,6 +776,10 @@ class ReadyThread(XPerfEvent):
 
 
 class ContextSwitchToThread(XPerfEvent):
+    """ ContextSwitchToThread only fires for the last thread whose ID was
+    recorded in the attr_data whiteboard via the XPerfEvent.EVENT_DATA_TID key.
+    """
+
     tid_index = None
 
     def __init__(self):
@@ -698,7 +852,31 @@ class FileIOReadOrWrite(XPerfEvent):
 
 
 class XPerfFile(object):
+    """ This class is the main entry point into xperf analysis. The user should
+    create one or more attributes, add them via add_attr(), and then call
+    analyze() to run.
+    """
+
     def __init__(self, **kwargs):
+        """ Keyword arguments:
+
+        etlfile -- Path to a merged .etl file to use for the analysis.
+        etluser -- Path a a user-mode .etl file to use for the analysis. It
+                   will be merged with the supplied kernel-mode .etl file
+                   before running the analysis.
+        etlkernel -- Path to a kernel-mode .etl file to use for the analysis.
+                     It will be merged with the supplied user-mode .etl file
+                     before running the analysis.
+        csvfile -- Path to a CSV file that was previously exported using xperf.
+                   This file will be used for the analysis.
+        csvout -- When used with either the etlfile option or the (etluser and
+                  etlkernel) option, specifies the path to use for the exported
+                  CSV file.
+        keepcsv -- When true, any CSV file generated during the analysis will
+                   be left on the file system. Otherwise, the CSV file will be
+                   removed once the analysis is complete.
+        """
+
         self.csv_fd = None
         self.csvfile = None
         self.csvout = None
@@ -733,6 +911,9 @@ class XPerfFile(object):
         attr.set_session(self.sess)
 
     def get_xperf_path(self):
+        """ Currently this class does not accept a path to xperf as an
+        argument, but rather searches for xperf on the system PATH.
+        """
         if self.xperf_path:
             return self.xperf_path
 
@@ -892,6 +1073,8 @@ if __name__ == "__main__":
             action='store_true', default=True)
 
         args = parser.parse_args()
+
+        # This is merely sample code for running analyses.
 
         with XPerfFile(**vars(args)) as etl:
             def null_output(attr):
