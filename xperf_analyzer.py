@@ -72,7 +72,7 @@ class XPerfAttribute(ABC):
         self.remove_event(evt)
 
         if self.evtlist:
-            self.evtlist[0].set_data(evt.get_data())
+            self.evtlist[0].set_attr_data(evt.get_attr_data())
         else:
             self.do_process()
 
@@ -165,7 +165,7 @@ class XPerfCounter(XPerfAttribute):
             self.filters = dict()
 
     def accumulate(self, evt):
-        data = evt.get_data()
+        data = evt.get_attr_data()
 
         for (key, comp) in self.filters.items():
             try:
@@ -210,7 +210,7 @@ class XPerfCounter(XPerfAttribute):
 
 class XPerfEvent:
     # These keys are used to reference accumulated data that is passed across
-    # events by |self.data|
+    # events by |self.attr_data|
     # The pid recorded by a process or thread related event
     EVENT_DATA_PID = 'pid'
     # The command line recorded by a ProcessStart event
@@ -228,7 +228,7 @@ class XPerfEvent:
     def __init__(self, key):
         self.key = key
         self.timestamp_index = None
-        self.data = dict()
+        self.attr_data = dict()
 
     def set_attr(self, attr):
         self.attr = attr
@@ -236,11 +236,11 @@ class XPerfEvent:
     def get_attr(self):
         return self.attr
 
-    def set_data(self, data):
-        self.data = data
+    def set_attr_data(self, data):
+        self.attr_data = data
 
-    def get_data(self):
-        return self.data
+    def get_attr_data(self):
+        return self.attr_data
 
     def get_field_index(self, field):
         return self.attr.get_field_index(self.key, field)
@@ -284,11 +284,11 @@ class EventExpression(ABC):
         return self.attr.get_field_index(key, field)
 
     @abstractmethod
-    def set_data(self, data):
+    def set_attr_data(self, data):
         pass
 
     @abstractmethod
-    def get_data(self):
+    def get_attr_data(self):
         pass
 
     @abstractmethod
@@ -318,11 +318,11 @@ class Nth(EventExpression):
         if self.match_count == self.N:
             self.attr.on_event_matched(self)
 
-    def set_data(self, data):
-        self.event.set_data(data)
+    def set_attr_data(self, data):
+        self.event.set_attr_data(data)
 
-    def get_data(self):
-        return self.event.get_data()
+    def get_attr_data(self):
+        return self.event.get_attr_data()
 
     def do_match(self, row):
         self.event.do_match(row)
@@ -366,17 +366,17 @@ class EventSequence(EventExpression):
             self.seen_events.append(evt)
 
         if self.events:
-            # Transfer event data to the next event that will run
-            self.events[0].set_data(evt.get_data())
+            # Transfer attr data to the next event that will run
+            self.events[0].set_attr_data(evt.get_attr_data())
         else:
             # Or else we have run all of our events; notify the attribute
             self.attr.on_event_matched(self)
 
-    def set_data(self, data):
-        self.events[0].set_data(data)
+    def set_attr_data(self, data):
+        self.events[0].set_attr_data(data)
 
-    def get_data(self):
-        return self.seen_events[-1].get_data()
+    def get_attr_data(self):
+        return self.seen_events[-1].get_attr_data()
 
     def do_match(self, row):
         if self.attr.is_persistent() and len(self.events) == 0:
@@ -407,12 +407,12 @@ class BindThread(EventExpression):
             raise ValueError("We are not wrapping this event")
         self.attr.on_event_matched(self)
 
-    def set_data(self, data):
+    def set_attr_data(self, data):
         self.tid = data[XPerfEvent.EVENT_DATA_TID]
-        self.event.set_data(data)
+        self.event.set_attr_data(data)
 
-    def get_data(self):
-        return self.event.get_data()
+    def get_attr_data(self):
+        return self.event.get_attr_data()
 
     def do_match(self, row):
         try:
@@ -517,12 +517,13 @@ class ProcessStart(XPerfEvent):
         cmd_line = row[ProcessStart.cmd_line_index]
         cmd_line_tokens = ProcessStart.tokenize_cmd_line(cmd_line)
 
-        self.data[XPerfEvent.EVENT_DATA_PID] = pid
+        self.attr_data[XPerfEvent.EVENT_DATA_PID] = pid
 
         try:
-            cmd_line_dict = self.data[XPerfEvent.EVENT_DATA_CMD_LINE]
+            cmd_line_dict = self.attr_data[XPerfEvent.EVENT_DATA_CMD_LINE]
         except KeyError:
-            self.data[XPerfEvent.EVENT_DATA_CMD_LINE] = {pid: cmd_line_tokens}
+            self.attr_data[XPerfEvent.EVENT_DATA_CMD_LINE] = \
+                {pid: cmd_line_tokens}
         else:
             cmd_line_dict[pid] = cmd_line_tokens
 
@@ -549,17 +550,19 @@ class ThreadStart(XPerfEvent):
                 'Process Name ( PID)')
 
         m = ThreadStart.pid_extractor.match(row[ThreadStart.process_index])
-        if self.data[XPerfEvent.EVENT_DATA_PID] != int(m.group(1)):
+        if self.attr_data[XPerfEvent.EVENT_DATA_PID] != int(m.group(1)):
             return False
 
         if not ThreadStart.tid_index:
             ThreadStart.tid_index = self.get_field_index('ThreadID')
 
-        self.data[XPerfEvent.EVENT_DATA_TID] = int(row[ThreadStart.tid_index])
+        self.attr_data[XPerfEvent.EVENT_DATA_TID] = \
+            int(row[ThreadStart.tid_index])
         return True
 
     def __str__(self):
-        s = f"Thread start in process [{self.data[XPerfEvent.EVENT_DATA_PID]}]"
+        s = "Thread start in process " + \
+            "[{self.attr_data[XPerfEvent.EVENT_DATA_PID]}]"
         return s
 
 
@@ -569,9 +572,6 @@ class ReadyThread(XPerfEvent):
     def __init__(self):
         super().__init__('ReadyThread')
 
-    def set_data(self, data):
-        super().set_data(data)
-
     def match(self, row):
         if not super().match(row):
             return False
@@ -580,13 +580,14 @@ class ReadyThread(XPerfEvent):
             ReadyThread.tid_index = self.get_field_index('Rdy TID')
 
         try:
-            return self.data[XPerfEvent.EVENT_DATA_TID] == \
+            return self.attr_data[XPerfEvent.EVENT_DATA_TID] == \
                    int(row[ReadyThread.tid_index])
         except KeyError:
             return False
 
     def __str__(self):
-        return f"Thread [{self.data[XPerfEvent.EVENT_DATA_TID]!s}] is ready"
+        return f"Thread [{self.attr_data[XPerfEvent.EVENT_DATA_TID]!s}]" + \
+               " is ready"
 
 
 class ContextSwitchToThread(XPerfEvent):
@@ -603,14 +604,14 @@ class ContextSwitchToThread(XPerfEvent):
             ContextSwitchToThread.tid_index = self.get_field_index('New TID')
 
         try:
-            return self.data[XPerfEvent.EVENT_DATA_TID] == \
+            return self.attr_data[XPerfEvent.EVENT_DATA_TID] == \
                    int(row[ContextSwitchToThread.tid_index])
         except KeyError:
             return False
 
     def __str__(self):
         return "Context switch to thread " + \
-               f"[{self.data[XPerfEvent.EVENT_DATA_TID]!s}]"
+               f"[{self.attr_data[XPerfEvent.EVENT_DATA_TID]!s}]"
 
 
 class FileIOReadOrWrite(XPerfEvent):
@@ -646,13 +647,13 @@ class FileIOReadOrWrite(XPerfEvent):
             FileIOReadOrWrite.file_name_index = \
                 self.get_field_index('FileName')
 
-        self.data[XPerfEvent.EVENT_DATA_TID] = \
+        self.attr_data[XPerfEvent.EVENT_DATA_TID] = \
             int(row[FileIOReadOrWrite.tid_index])
-        self.data[XPerfEvent.EVENT_NUM_BYTES] = \
+        self.attr_data[XPerfEvent.EVENT_NUM_BYTES] = \
             int(row[FileIOReadOrWrite.num_bytes_index], 0)
-        self.data[XPerfEvent.EVENT_FILE_NAME] = \
+        self.attr_data[XPerfEvent.EVENT_FILE_NAME] = \
             row[FileIOReadOrWrite.file_name_index].strip('"')
-        self.data[XPerfEvent.EVENT_ACCUMULATABLE_FIELDS] = \
+        self.attr_data[XPerfEvent.EVENT_ACCUMULATABLE_FIELDS] = \
             {XPerfEvent.EVENT_NUM_BYTES}
 
         return True
