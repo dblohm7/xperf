@@ -146,7 +146,7 @@ class XPerfAttribute(object):
         """
         if evt not in self.evtlist:
             raise Exception("Event mismatch: \"{!s}\" is not in this "
-                             .format((evt)) + "attribute's event list")
+                            .format((evt)) + "attribute's event list")
 
         self.accumulate(evt)
 
