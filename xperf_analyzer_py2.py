@@ -20,6 +20,28 @@ class XPerfSession(object):
         self.evtkey = dict()
         self.evtset = set()
 
+    def is_empty(self):
+        return not self.attrs
+
+    def add_field_mapping(self, event_name, field_mapping):
+        self.evtkey[event_name] = field_mapping
+
+    def get_field_index(self, event_name, field_name):
+        return self.evtkey[event_name][field_name]
+
+    def add_attr(self, attr):
+        self.evtset.update(attr.get_events())
+        self.attrs.add(attr)
+
+    def remove_attr_events(self, attr):
+        self.evtset.difference_update(attr.get_events())
+
+    def remove_event(self, evt):
+        self.evtset.remove(evt)
+
+    def remove_attr(self, attr):
+        self.attrs.remove(attr)
+
     def match_events(self, row):
         # Make a shallow copy because events will mutate the event set
         local_evtset = self.evtset.copy()
@@ -48,19 +70,21 @@ class XPerfAttribute(object):
         except KeyError:
             self.output = lambda a: None
 
+    def get_events(self):
+        return self.evtlist
+
     def is_persistent(self):
         return self.persistent
 
     def set_session(self, sess):
         if sess:
-            sess.evtset.update(self.evtlist)
-            sess.attrs.add(self)
+            sess.add_attr(self)
         else:
-            self.sess.evtset.difference_update(self.evtlist)
+            self.sess.remove_attr_events(self)
         self.sess = sess
 
     def get_field_index(self, key, field):
-        return self.sess.evtkey[key][field]
+        return self.sess.get_field_index(key, field)
 
     def on_event_matched(self, evt):
         if evt not in self.evtlist:
@@ -82,10 +106,10 @@ class XPerfAttribute(object):
     def remove_event(self, evt):
         self.evtlist.remove(evt)
         self.seen_evtlist.append(evt)
-        self.sess.evtset.remove(evt)
+        self.sess.remove_event(evt)
 
     def do_process(self):
-        self.sess.attrs.remove(self)
+        self.sess.remove_attr(self)
         self.process()
         self.output(self)
 
@@ -788,8 +812,8 @@ class XPerfFile(object):
                     continue
 
                 # Map field names to indices
-                self.sess.evtkey[row[0]] = {v: k + 1 for k, v in
-                                            enumerate(row[1:])}
+                self.sess.add_field_mapping(row[0], {v: k + 1 for k, v in
+                                                     enumerate(row[1:])})
                 continue
 
             if state >= 1:
@@ -801,7 +825,7 @@ class XPerfFile(object):
     def analyze(self):
         for row in self.data:
             self.sess.match_events(row)
-            if not self.sess.attrs:
+            if self.sess.is_empty():
                 # No more attrs to look for, we might as well quit
                 return
 
