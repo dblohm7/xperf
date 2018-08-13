@@ -155,7 +155,7 @@ class XPerfAttribute(ABC):
 
         if self.evtlist:
             # Propagate the attribute data from the current event to the next
-            self.evtlist[0].set_attr_data(evt.get_attr_data())
+            self.evtlist[0].set_whiteboard(evt.get_whiteboard())
         else:
             self.do_process()
 
@@ -286,7 +286,7 @@ class XPerfCounter(XPerfAttribute):
             self.filters = dict()
 
     def accumulate(self, evt):
-        data = evt.get_attr_data()
+        data = evt.get_whiteboard()
 
         for (key, comp) in self.filters.items():
             try:
@@ -331,16 +331,15 @@ class XPerfCounter(XPerfAttribute):
 
 class XPerfEvent:
     """ Base class for all events. An important feature of this class is the
-    attr_data variable. This variable is a dict that acts as a "whiteboard" for
-    passing values between successive events that are *owned by the same
-    attribute*.
+    whiteboard variable. This variable is allows for passing values between
+    successive events that are *owned by the same attribute*.
 
     This allows, for example, a thread ID from a scheduler event to be consumed
     by a subsequent event that only wants to fire for particular thread IDs.
     """
 
     # These keys are used to reference accumulated data that is passed across
-    # events by |self.attr_data|:
+    # events by |self.whiteboard|:
 
     # The pid recorded by a process or thread related event
     EVENT_DATA_PID = 'pid'
@@ -361,7 +360,7 @@ class XPerfEvent:
 
     def __init__(self, key):
         self.key = key
-        self.attr_data = dict()
+        self.whiteboard = dict()
 
     def set_attr(self, attr):
         self.attr = attr
@@ -369,11 +368,11 @@ class XPerfEvent:
     def get_attr(self):
         return self.attr
 
-    def set_attr_data(self, data):
-        self.attr_data = data
+    def set_whiteboard(self, data):
+        self.whiteboard = data
 
-    def get_attr_data(self):
-        return self.attr_data
+    def get_whiteboard(self):
+        return self.whiteboard
 
     def get_field_index(self, field):
         return self.attr.get_field_index(self.key, field)
@@ -426,11 +425,11 @@ class EventExpression(ABC):
         return self.attr.get_field_index(key, field)
 
     @abstractmethod
-    def set_attr_data(self, data):
+    def set_whiteboard(self, data):
         pass
 
     @abstractmethod
-    def get_attr_data(self):
+    def get_whiteboard(self):
         pass
 
     @abstractmethod
@@ -463,11 +462,11 @@ class Nth(EventExpression):
         if self.match_count == self.N:
             self.attr.on_event_matched(self)
 
-    def set_attr_data(self, data):
-        self.event.set_attr_data(data)
+    def set_whiteboard(self, data):
+        self.event.set_whiteboard(data)
 
-    def get_attr_data(self):
-        return self.event.get_attr_data()
+    def get_whiteboard(self):
+        return self.event.get_whiteboard()
 
     def do_match(self, row):
         self.event.do_match(row)
@@ -524,16 +523,16 @@ class EventSequence(EventExpression):
 
         if self.events:
             # Transfer attr data to the next event that will run
-            self.events[0].set_attr_data(evt.get_attr_data())
+            self.events[0].set_whiteboard(evt.get_whiteboard())
         else:
             # Or else we have run all of our events; notify the attribute
             self.attr.on_event_matched(self)
 
-    def set_attr_data(self, data):
-        self.events[0].set_attr_data(data)
+    def set_whiteboard(self, data):
+        self.events[0].set_whiteboard(data)
 
-    def get_attr_data(self):
-        return self.seen_events[-1].get_attr_data()
+    def get_whiteboard(self):
+        return self.seen_events[-1].get_whiteboard()
 
     def do_match(self, row):
         if self.attr.is_persistent() and len(self.events) == 0:
@@ -556,7 +555,7 @@ class EventSequence(EventExpression):
 class BindThread(EventExpression):
     """ This event expression binds the event that it encapsulates to a
     specific thread ID. This is used to force an event to only fire when it
-    matches the thread ID supplied by the attr_data whiteboard.
+    matches the thread ID supplied by the whiteboard.
     """
     def __init__(self, event):
         super().__init__(event)
@@ -568,12 +567,12 @@ class BindThread(EventExpression):
             raise Exception("We are not wrapping this event")
         self.attr.on_event_matched(self)
 
-    def set_attr_data(self, data):
+    def set_whiteboard(self, data):
         self.tid = data[XPerfEvent.EVENT_DATA_TID]
-        self.event.set_attr_data(data)
+        self.event.set_whiteboard(data)
 
-    def get_attr_data(self):
-        return self.event.get_attr_data()
+    def get_whiteboard(self):
+        return self.event.get_whiteboard()
 
     def do_match(self, row):
         try:
@@ -682,12 +681,12 @@ class ProcessStart(XPerfEvent):
         cmd_line = row[ProcessStart.cmd_line_index]
         cmd_line_tokens = ProcessStart.tokenize_cmd_line(cmd_line)
 
-        self.attr_data[XPerfEvent.EVENT_DATA_PID] = pid
+        self.whiteboard[XPerfEvent.EVENT_DATA_PID] = pid
 
         try:
-            cmd_line_dict = self.attr_data[XPerfEvent.EVENT_DATA_CMD_LINE]
+            cmd_line_dict = self.whiteboard[XPerfEvent.EVENT_DATA_CMD_LINE]
         except KeyError:
-            self.attr_data[XPerfEvent.EVENT_DATA_CMD_LINE] = \
+            self.whiteboard[XPerfEvent.EVENT_DATA_CMD_LINE] = \
                 {pid: cmd_line_tokens}
         else:
             cmd_line_dict[pid] = cmd_line_tokens
@@ -700,7 +699,7 @@ class ProcessStart(XPerfEvent):
 
 class ThreadStart(XPerfEvent):
     """ ThreadStart only fires for threads whose process matches the
-    XPerfEvent.EVENT_DATA_PID entry in the attr_data whiteboard.
+    XPerfEvent.EVENT_DATA_PID entry in the whiteboard.
     """
     process_index = None
     tid_index = None
@@ -718,25 +717,25 @@ class ThreadStart(XPerfEvent):
                 'Process Name ( PID)')
 
         m = ThreadStart.pid_extractor.match(row[ThreadStart.process_index])
-        if self.attr_data[XPerfEvent.EVENT_DATA_PID] != int(m.group(1)):
+        if self.whiteboard[XPerfEvent.EVENT_DATA_PID] != int(m.group(1)):
             return False
 
         if not ThreadStart.tid_index:
             ThreadStart.tid_index = self.get_field_index('ThreadID')
 
-        self.attr_data[XPerfEvent.EVENT_DATA_TID] = \
+        self.whiteboard[XPerfEvent.EVENT_DATA_TID] = \
             int(row[ThreadStart.tid_index])
         return True
 
     def __str__(self):
         s = "Thread start in process " + \
-            "[{self.attr_data[XPerfEvent.EVENT_DATA_PID]}]"
+            "[{self.whiteboard[XPerfEvent.EVENT_DATA_PID]}]"
         return s
 
 
 class ReadyThread(XPerfEvent):
     """ ReadyThread only fires for the last thread whose ID was recorded in the
-    attr_data whiteboard via the XPerfEvent.EVENT_DATA_TID key.
+    whiteboard via the XPerfEvent.EVENT_DATA_TID key.
     """
 
     tid_index = None
@@ -752,19 +751,19 @@ class ReadyThread(XPerfEvent):
             ReadyThread.tid_index = self.get_field_index('Rdy TID')
 
         try:
-            return self.attr_data[XPerfEvent.EVENT_DATA_TID] == \
+            return self.whiteboard[XPerfEvent.EVENT_DATA_TID] == \
                    int(row[ReadyThread.tid_index])
         except KeyError:
             return False
 
     def __str__(self):
-        return f"Thread [{self.attr_data[XPerfEvent.EVENT_DATA_TID]!s}]" + \
+        return f"Thread [{self.whiteboard[XPerfEvent.EVENT_DATA_TID]!s}]" + \
                " is ready"
 
 
 class ContextSwitchToThread(XPerfEvent):
     """ ContextSwitchToThread only fires for the last thread whose ID was
-    recorded in the attr_data whiteboard via the XPerfEvent.EVENT_DATA_TID key.
+    recorded in the whiteboard via the XPerfEvent.EVENT_DATA_TID key.
     """
 
     tid_index = None
@@ -780,14 +779,14 @@ class ContextSwitchToThread(XPerfEvent):
             ContextSwitchToThread.tid_index = self.get_field_index('New TID')
 
         try:
-            return self.attr_data[XPerfEvent.EVENT_DATA_TID] == \
+            return self.whiteboard[XPerfEvent.EVENT_DATA_TID] == \
                    int(row[ContextSwitchToThread.tid_index])
         except KeyError:
             return False
 
     def __str__(self):
         return "Context switch to thread " + \
-               f"[{self.attr_data[XPerfEvent.EVENT_DATA_TID]!s}]"
+               f"[{self.whiteboard[XPerfEvent.EVENT_DATA_TID]!s}]"
 
 
 class FileIOReadOrWrite(XPerfEvent):
@@ -823,13 +822,13 @@ class FileIOReadOrWrite(XPerfEvent):
             FileIOReadOrWrite.file_name_index = \
                 self.get_field_index('FileName')
 
-        self.attr_data[XPerfEvent.EVENT_DATA_TID] = \
+        self.whiteboard[XPerfEvent.EVENT_DATA_TID] = \
             int(row[FileIOReadOrWrite.tid_index])
-        self.attr_data[XPerfEvent.EVENT_NUM_BYTES] = \
+        self.whiteboard[XPerfEvent.EVENT_NUM_BYTES] = \
             int(row[FileIOReadOrWrite.num_bytes_index], 0)
-        self.attr_data[XPerfEvent.EVENT_FILE_NAME] = \
+        self.whiteboard[XPerfEvent.EVENT_FILE_NAME] = \
             row[FileIOReadOrWrite.file_name_index].strip('"')
-        self.attr_data[XPerfEvent.EVENT_ACCUMULATABLE_FIELDS] = \
+        self.whiteboard[XPerfEvent.EVENT_ACCUMULATABLE_FIELDS] = \
             {XPerfEvent.EVENT_NUM_BYTES}
 
         return True
