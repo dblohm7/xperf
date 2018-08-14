@@ -154,7 +154,7 @@ class XPerfAttribute(ABC):
         self.remove_event(evt)
 
         if self.evtlist:
-            # Propagate the attribute data from the current event to the next
+            # Propagate the whiteboard from the current event to the next
             self.evtlist[0].set_whiteboard(evt.get_whiteboard())
         else:
             self.do_process()
@@ -275,7 +275,7 @@ class XPerfCounter(XPerfAttribute):
                    provides filters to be used to screen out unwanted events.
                    They key points to one of the XPerfEvent constants, and the
                    value is a function that evaluates the corresponding value
-                   from the event's attribute data.
+                   from the event's whiteboard.
         """
         super().__init__([evt], XPerfAttribute.PERSISTENT, **kwargs)
         self.values = dict()
@@ -399,7 +399,7 @@ class XPerfEvent:
 
 
 class EventExpression(ABC):
-    """ EventExpression is an optional layer that sits between attibutes and
+    """ EventExpression is an optional layer that sits between attributes and
     events, and allow the user to compose multiple events into a more complex
     event. To achieve this, EventExpression implementations must implement both
     the XPerfEvent interface (so that their underlying attributes may
