@@ -878,8 +878,10 @@ class XPerfFile:
             raise Exception('Missing parameters: etl or csv files required')
 
         if self.etlfile:
-            if kwargs['csvout']:
+            try:
                 self.csvout = os.path.abspath(kwargs['csvout'])
+            except KeyError:
+                pass
             self.etl2csv()
         else:
             self.csvfile = os.path.abspath(kwargs['csvfile'])
