@@ -273,7 +273,7 @@ class XPerfCounter(XPerfAttribute):
 
         filters -- An optional argument that provides a dictionary that
                    provides filters to be used to screen out unwanted events.
-                   They key points to one of the XPerfEvent constants, and the
+                   Their key points to one of the XPerfEvent constants, and the
                    value is a function that evaluates the corresponding value
                    from the event's whiteboard.
         """
