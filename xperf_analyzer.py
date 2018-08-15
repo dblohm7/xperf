@@ -506,7 +506,7 @@ class EventSequence(EventExpression):
     def __init__(self, *events):
         super().__init__(list(events))
         if len(events) < 2:
-            raise Exception("Why are you using this?")
+            raise Exception('EventSequence requires at least two events')
         self.events = deque(events)
         self.seen_events = []
 
@@ -790,23 +790,26 @@ class ContextSwitchToThread(XPerfEvent):
 
 
 class FileIOReadOrWrite(XPerfEvent):
-    READ = False
-    WRITE = True
+    READ = 0
+    WRITE = 1
 
     tid_index = None
     num_bytes_index = None
     file_name_index = None
 
     def __init__(self, verb):
-        self.verb = verb
-        if verb:
+        if verb == FileIOReadOrWrite.WRITE:
             evt_name = 'FileIoWrite'
             self.strverb = 'Write'
-        else:
+        elif verb == FileIOReadOrWrite.READ:
             evt_name = 'FileIoRead'
             self.strverb = 'Read'
+        else:
+            raise Exception('Invalid verb argument to FileIOReadOrWrite')
 
         super().__init__(evt_name)
+
+        self.verb = verb
 
     def match(self, row):
         if not super().match(row):
@@ -843,9 +846,10 @@ class XPerfFile:
     analyze() to run.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, xperf_path=None, debug=False, **kwargs):
         """ Keyword arguments:
 
+        debug -- When True, enables additional diagnostics
         etlfile -- Path to a merged .etl file to use for the analysis.
         etluser -- Path a a user-mode .etl file to use for the analysis. It
                    will be merged with the supplied kernel-mode .etl file
@@ -861,19 +865,22 @@ class XPerfFile:
         keepcsv -- When true, any CSV file generated during the analysis will
                    be left on the file system. Otherwise, the CSV file will be
                    removed once the analysis is complete.
+        xperf_path -- Absolute path to xperf.exe. When absent, XPerfFile will
+                      attempt to resolve xperf via the system PATH.
         """
 
         self.csv_fd = None
         self.csvfile = None
         self.csvout = None
+        self.debug = debug
         self.etlfile = None
         self.keepcsv = False
-        self.xperf_path = None
+        self.xperf_path = xperf_path
 
         if 'etlfile' in kwargs:
             self.etlfile = os.path.abspath(kwargs['etlfile'])
         elif 'etluser' in kwargs and 'etlkernel' in kwargs:
-            self.etl_merge_user_kernel(**kwargs)
+            self.etlfile = self.etl_merge_user_kernel(**kwargs)
         elif 'csvfile' not in kwargs:
             raise Exception('Missing parameters: etl or csv files required')
 
@@ -882,7 +889,7 @@ class XPerfFile:
                 self.csvout = os.path.abspath(kwargs['csvout'])
             except KeyError:
                 pass
-            self.etl2csv()
+            self.csvfile = self.etl2csv()
         else:
             self.csvfile = os.path.abspath(kwargs['csvfile'])
 
@@ -899,9 +906,6 @@ class XPerfFile:
         attr.set_session(self.sess)
 
     def get_xperf_path(self):
-        """ Currently this class does not accept a path to xperf as an
-        argument, but rather searches for xperf on the system PATH.
-        """
         if self.xperf_path:
             return self.xperf_path
 
@@ -923,8 +927,10 @@ class XPerfFile:
         merged = os.path.join(base, 'merged.etl')
 
         xperf_cmd = [self.get_xperf_path(), '-merge', user, kernel, merged]
+        if self.debug:
+            print("Executing '%s'" % subprocess.list2cmdline(xperf_cmd))
         subprocess.call(xperf_cmd)
-        self.etlfile = merged
+        return merged
 
     def etl2csv(self):
         if self.csvout:
@@ -936,8 +942,10 @@ class XPerfFile:
 
         xperf_cmd = [self.get_xperf_path(), '-i', self.etlfile, '-o',
                      abs_csv_name]
+        if self.debug:
+            print("Executing '%s'" % subprocess.list2cmdline(xperf_cmd))
         subprocess.call(xperf_cmd)
-        self.csvfile = abs_csv_name
+        return abs_csv_name
 
     def __enter__(self):
         if not self.load():
@@ -1089,14 +1097,12 @@ if __name__ == "__main__":
             read_counter = XPerfCounter(browser_main_thread_file_io_read,
                                         output=structured_output,
                                         filters=myfilters)
-            # etl.add_attr(read_counter)
 
             browser_main_thread_file_io_write = EventSequence(
                 Nth(2, ProcessStart('firefox.exe')), ThreadStart(),
                 BindThread(FileIOReadOrWrite(FileIOReadOrWrite.WRITE)))
             write_counter = XPerfCounter(browser_main_thread_file_io_write,
                                          output=structured_output)
-            # etl.add_attr(write_counter)
 
             # This is equivalent to the old-style xperf test (with launcher)
             parent_process_started = Nth(2, ProcessStart('firefox.exe'))
@@ -1112,8 +1118,5 @@ if __name__ == "__main__":
             etl.add_attr(interval4)
 
             etl.analyze()
-
-            # read_counter.process()
-            # write_counter.process()
 
     main()
