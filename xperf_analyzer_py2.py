@@ -13,6 +13,10 @@ import re
 import subprocess
 from uuid import UUID
 
+# This constant must match the event declared in
+# toolkit/components/startup/mozprofilerprobe.mof
+EVENT_ID_FIREFOX_WINDOW_RESTORED = '{917B96B1-ECAD-4DAB-A760-8D49027748AE}'
+
 
 class XPerfSession(object):
     """ This class encapsulates data that is retained for the term of the xperf
@@ -466,7 +470,9 @@ class Nth(EventExpression):
 
     def on_event_matched(self, evt):
         if evt != self.event:
-            raise Exception("We are not wrapping this event")
+            raise Exception(
+                "Nth expression for event " +
+                "\"%s\" fired for event \"%s\" instead" % (self.event, evt))
         self.match_count += 1
         if self.match_count == self.N:
             self.attr.on_event_matched(self)
@@ -515,7 +521,9 @@ class EventSequence(EventExpression):
     def __init__(self, *events):
         super(EventSequence, self).__init__(list(events))
         if len(events) < 2:
-            raise Exception('EventSequence requires at least two events')
+            raise Exception(
+                'EventSequence requires at least two events, %d provided' %
+                len(events))
         self.events = deque(events)
         self.seen_events = []
 
@@ -523,7 +531,10 @@ class EventSequence(EventExpression):
         unseen_events = len(self.events) > 0
         if unseen_events and evt != self.events[0] or not unseen_events and \
            evt != self.seen_events[-1]:
-            raise Exception("We are not executing this event")
+            raise Exception(
+                'Unexpected event "%s" is not a member of this event sequence'
+                % (evt)
+                )
 
         # Move the event from events queue to seen_events
         if unseen_events:
@@ -573,7 +584,9 @@ class BindThread(EventExpression):
 
     def on_event_matched(self, evt):
         if evt != self.event:
-            raise Exception("We are not wrapping this event")
+            raise Exception(
+                "BindThread expression for event " +
+                "\"%s\" fired for event \"%s\" instead" % (self.event, evt))
         self.attr.on_event_matched(self)
 
     def set_whiteboard(self, data):
@@ -628,7 +641,7 @@ class SessionStoreWindowRestored(ClassicEvent):
     """ The Firefox session store window restored event """
     def __init__(self):
         super(SessionStoreWindowRestored, self).__init__(
-            '{917B96B1-ECAD-4DAB-A760-8D49027748AE}')
+            EVENT_ID_FIREFOX_WINDOW_RESTORED)
 
     def __str__(self):
         return "Firefox Session Store Window Restored"
